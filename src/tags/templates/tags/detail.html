@@ -1,0 +1,20 @@
+{% extends "tags/base.html" %}
+{% load static %}
+{% load utility_tags %}
+
+{% block head %}
+{% endblock %}
+
+{% block heading_inner %}
+    "{{object.name}}" {% tag_name %} Details <small>{% if user_obj %}for <a href="{{user_obj.profile.get_absolute_url}}">{{user_obj.username}}</a>{% endif %}</small>
+{% endblock %}
+
+{% block content %}
+
+{% if user_obj %}<p>Total XP earned: {{ user_xp_by_this_tag }}</p>{% else %}{% endif %}
+{% include 'tags/snippets/related-xp-item.html' with type='default' %}
+
+{% endblock %}
+
+{% block js %}
+{% endblock %}

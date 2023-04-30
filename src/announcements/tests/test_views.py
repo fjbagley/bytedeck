@@ -4,9 +4,10 @@ from django.contrib.auth import get_user_model
 from django.forms.models import model_to_dict
 from django.urls import reverse
 from django.utils import timezone
+
+from django_tenants.test.cases import TenantTestCase
+from django_tenants.test.client import TenantClient
 from model_bakery import baker
-from tenant_schemas.test.cases import TenantTestCase
-from tenant_schemas.test.client import TenantClient
 
 from announcements.forms import AnnouncementForm
 from announcements.models import Announcement
@@ -31,21 +32,19 @@ class AnnouncementViewTests(ViewTestUtilsMixin, TenantTestCase):
         self.ann_pk = self.test_announcement.pk
 
     def test_all_announcement_page_status_codes_for_anonymous(self):
-        ''' If not logged in then all views should redirect to home page or admin  '''
+        ''' If not logged in then all views should redirect to login page '''
 
-        # go home
         self.assertRedirectsLogin('announcements:list')
         self.assertRedirectsLogin('announcements:archived')
         self.assertRedirectsLogin('announcements:list2')
         self.assertRedirectsLogin('announcements:comment', args=[1])
         self.assertRedirectsLogin('announcements:list', args=[1])
 
-        # go admin
-        self.assertRedirectsAdmin('announcements:create')
-        self.assertRedirectsAdmin('announcements:delete', args=[1])
-        self.assertRedirectsAdmin('announcements:update', args=[1])
-        self.assertRedirectsAdmin('announcements:copy', args=[1])
-        self.assertRedirectsAdmin('announcements:publish', args=[1])
+        self.assertRedirectsLogin('announcements:create')
+        self.assertRedirectsLogin('announcements:delete', args=[1])
+        self.assertRedirectsLogin('announcements:update', args=[1])
+        self.assertRedirectsLogin('announcements:copy', args=[1])
+        self.assertRedirectsLogin('announcements:publish', args=[1])
 
     def test_all_announcement_page_status_codes_for_students(self):
         # log in a student
@@ -57,9 +56,9 @@ class AnnouncementViewTests(ViewTestUtilsMixin, TenantTestCase):
         #     print(field, getattr(self.test_announcement, field.name))
 
         # students should have access to these:
-        self.assertEqual(self.client.get(reverse('announcements:list')).status_code, 200)
-        self.assertEqual(self.client.get(reverse('announcements:list2')).status_code, 200)
-        self.assertEqual(self.client.get(reverse('announcements:list', args=[self.ann_pk])).status_code, 200)
+        self.assert200('announcements:list')
+        self.assert200('announcements:list2')
+        self.assert200('announcements:list', args=[self.ann_pk])
 
         # Announcement from setup() should appear in the list
         self.assertContains(self.client.get(reverse('announcements:list')), self.test_announcement.title)
@@ -73,12 +72,12 @@ class AnnouncementViewTests(ViewTestUtilsMixin, TenantTestCase):
             expected_url=reverse('announcements:list', args=[self.ann_pk]),
         )
 
-        # These views should redirect to admin login
-        self.assertRedirectsAdmin('announcements:create')
-        self.assertRedirectsAdmin('announcements:delete', args=[1])
-        self.assertRedirectsAdmin('announcements:update', args=[1])
-        self.assertRedirectsAdmin('announcements:copy', args=[1])
-        self.assertRedirectsAdmin('announcements:publish', args=[1])
+        # Authenticated users that aren't staff should get permission denied 403
+        self.assert403('announcements:create')
+        self.assert403('announcements:delete', args=[1])
+        self.assert403('announcements:update', args=[1])
+        self.assert403('announcements:copy', args=[1])
+        self.assert403('announcements:publish', args=[1])
 
     def test_all_announcement_page_status_codes_for_teachers(self):
         # log in a teacher
@@ -279,7 +278,7 @@ class AnnouncementArchivedViewTests(ViewTestUtilsMixin, TenantTestCase):
         """
         # create enough announcements to create a second page, oldest should be on second page
         for _ in range(21):
-            baker.make(Announcement, archived=True, draft=False) 
+            baker.make(Announcement, archived=True, draft=False)
 
         # Make sure 2nd page exists
         self.client.force_login(self.test_teacher)
@@ -301,7 +300,7 @@ class AnnouncementArchivedViewTests(ViewTestUtilsMixin, TenantTestCase):
 
         # create enough announcements to create a second page, oldest should be on second page
         for _ in range(20):
-            baker.make(Announcement, archived=True, draft=False) 
+            baker.make(Announcement, archived=True, draft=False)
 
         # Make sure the oldest announcement is accessible there
         response = self.client.get("/announcements/archived/?page=2")
@@ -318,7 +317,7 @@ class AnnouncementArchivedViewTests(ViewTestUtilsMixin, TenantTestCase):
 
         self.client.force_login(self.test_teacher)
         self.client.get(reverse('courses:end_active_semester'))
-        
+
         draft_ann.refresh_from_db()
         self.assertFalse(draft_ann.archived)
 

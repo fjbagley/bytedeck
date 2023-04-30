@@ -4,6 +4,207 @@ This file chronologically records all notable changes to this website, including
 
 [Changelogs](http://keepachangelog.com/en/0.3.0/) | [Versioning](http://semver.org/) | [Branch model](https://nvie.com/posts/a-successful-git-branching-model/)
 
+### [1.20.0] 2023-04-16
+* New feature: Users can now sign in or sing up using their Google/Gmail account via OAuth2.  This feature must be specifically requested for a deck as it requires manually registering the deck's url with Google.
+* New feature: Summernote Advanced WYSIWYG widget allows scripts to run.  Currently implemented on the Quest Description, Submission Details, and Instructor Notes fields.  Indicated with a red CodeView button when hovered.
+* Email authentication.  Users will now be reminded on login to verify their email addresses by clicking the verification link sent to the email address they enter in their profile.  Users can resend the verification link from their profile.  Unverified emails will be ignored when sending notifications or announcements.  This only affects user who do not register with Google Sign In unless they change the email address in their profile.
+* Set login session expiry to 8 weeks (when you tick "Remember Me")
+* Bugfixes:
+  - Summernote "Safe" widget properly escapes HTML and strips script tags.
+  - Archived quests should not apopear in maps [#1291](https://github.com/bytedeck/bytedeck/issues/1291)
+* Devops:
+  - Bump build pipeline to use Ubuntu 20.04
+  - Add missing migration check to build and pre-commit hooks
+  - Pre-commit hooks run on entire codebase
+  - Upgrade dependancies
+
+
+### [1.19.4] 2023-03-20
+* Add links to public tenant landing page header and footer
+* Bugfixs:
+  - Autofix ordinal duplicates in repeatable quests [#1260](https://github.com/bytedeck/bytedeck/issues/1260)
+  - [#1266](https://github.com/bytedeck/bytedeck/issues/1266)
+
+
+
+### [1.19.3] 2023-01-02
+* Bugfixs:
+  - Advanced prerequisite widget upgrade compelte (replaced DAL with select2)
+  - Ordering error issue #1266
+  - Do not return None when creating a new quest submission, issue #1225
+* Development:
+  - Update precommit config
+  - Update Contributing guidelines
+  - Add Pull Request template
+
+### [1.19.2] 2022-12-04
+* Add courses as a column and sort option in student profile list.
+* Bugfixes:
+  - Advanced prerequisites form now loads (though slow and needs more work)
+  - New map form (same problem as above)
+  - Handle negative XP when closing a semester
+  - Quest list alphabetical sort
+  - Last staff login (Bytedeck)
+  - URLs for menu items now accepts external urls properly
+  - Missing delete option added for student's courses
+  - Custom pages (flatpages) auto generated Table of Contents repaired. Add this to the top of a custom page's HTML and it will generate a simple ToC based on "Heading 3" styled text (i.e `<h3>`):
+  ```<div id="TOC"></div>```
+
+### [1.19.1] 2022-09-03 - Beta Release
+* Visual representation of tags by student, linked to in profile and in mark calculations page
+* Students now have a quick reply option for returned and completed submissions.
+* Campaign "active" field now works.  Quests that are part of inactive campaigns will not be visible to students and won't show up on maps (a quick way for teachers to make a group of quests dissappear)
+* Homepage/landing page is now a Flatpage.  For development it's created during initdb, home url `/` redirects to the flatpage.  This allows for easier editing of the homepage in production.
+* Features that no longer require acces to the Django/Site Admin, and can now be edited in the main site by staff users:
+  - Staff can edit student course registrations, and register them in additional courses
+* Minor tweaks and bugfixes:
+  - tweak: Narrow public tenant flatpage template
+  - tweak: Use full wordmark on public flatpages
+  - tweak: New map creation uses a better widget to get the initial object
+  - tweak: campaign detail views are now accessible to students
+  - tweak: change portfolia "Public link" to "personal link"
+  - tweak: Tag detail view for students now shows total XP earned and links to all submissions (including all repeats of a quest)
+  - tweak: "This page if visible to staff only." added to staff only lists.
+  - tweak: Change submit button test to "Submit Quest for Approval" (previousyl said "Submit Quest for Completion")
+  - bugfix: tags by XP and tag charts now account for max xp per quest and student xp requested values
+  - bugfix: Mark Distribution graphs no more negative values
+  - bugfix: quests sort properly again
+  - bugfix: account for -1 (unlimited) users in public tenant list higlighting
+  - security: update several dependancies
+  - many very minor tweaks and typos corrected
+
+### [1.19.0] 2022-08-14 - Beta Release Candidate 02
+* Groups (name changed from Blocks) is now a prerequisite option
+* New Site Config options: Customize the name of Tags and Groups
+* Deprecate 'Grade' field as part of course regsitration.  It will no longer appear and can't be selected for new course registrations
+* Features that no longer require acces to the Django/Site Admin, and can now be edited in the main site by staff users:
+  - Students page now has new tabs to access: Inactive students, Staff users.
+* Minor tweaks and bugfixes:
+  - Change quest field "visible to students" field to "published" and added help text explaining Drafts tab
+  - Tenant list: fix 'active user' calculation to only include students currently registered in a course
+  - Tenant list: add 'last staff login' column
+  - Tenant list: Make columns sortable and filterable
+  - Prereq edit buttons only visible to staff
+  - Add useful info to Common Quest Info list page
+
+### [1.18.0] 2022-08-09 - Beta Release Candidate 01 + TAGS!
+* Tags:
+  - Tags list can be accessed via Admin menu under Course Setup
+  - Viewing a Tag's detail page will show all quests andbadges tagged with it
+  - Tags can be added to quests and badges on their forms in the Tags field. Select from existing tags, or new tags will be created if they don't already exist.
+  - Student Profile pages now include a list of tags, showing how much XP they have earned for each tag
+  - Clicking a tag in a student profile will list which quests/badges they earned the XP from under that tag
+  - Tags are listed in Quests and Badges top Info section (Quest/Badge detail view)
+  - Copying a quest/badge will also copy the tags
+* Notifications to staff now include a list of Quests awaiting approval
+* Features that no longer require acces to the Django/Site Admin, and can now be edited in the main site by staff users:
+  - "Common Quest Info" items now list/create/edit/delete from the quests submenu.
+* Defaults and deck initialization:
+  - New tenants (Decks) now default to max_users = 5 and trial_end_date = today + 60 days (though these fields are for info only, and still don't do anything)
+  - New tenant "Deck owner" user now defaults to having notification and announcement emails = True
+  - The default "Send a Message" quest in a new deck now notifies the deck owner user by default.
+  - Teams badges and badge category included in new decks
+* Minor tweaks and bugfixes:
+  - Quest Maps list view is available to students, and re-formatted
+  - Several quest/badge features and forms are now available in the quest/badge submenus
+  - email notifications fixed (would only send one until server was restarted)
+  - Teams badge category icon fixed
+* Development:
+  - Tenants in dev environment now displays proper default icons, default icons are now in repo.
+  - Flake8 pre-commit hook
+
+### [1.17.0] 2022-07-21 - Summer student contribution 03
+* "Deck owner" is no longer a superuser and will not have access to Django Admin.
+* Campaign list page (currently Admin > Campaigns) updated with quest count, XP available
+* Campign name in quests now link to the detail view of that campaign
+* Features that no longer require acces to the Django/Site Admin, and can now be edited in the main site by staff users:
+  - Password resetting
+  - Ability to set a user as Staff or TA (in profile form)
+  - Excluded dates for a semester
+* Minor tweaks and bugfixes:
+  - Changing semesters is now done in the Semester views
+  - "Badge Types" can now be created from Badges page
+  - New blocks default to the owner user as the teacher
+  - Flatpages added to the public tenant
+  - New default Badge Type "Teams" and 3 new default teams badges
+  - Various other minor bugfixes and tweaks
+
+### [1.16.0] 2022-07-01 - Summer student contribution 02
+* "Deck owner" field added to the Site Configuration form, indicating which user "owns" the deck.  This field can only be changed by the user currently listed as deck owner.  For future use. [#637](https://github.com/bytedeck/bytedeck/issues/637)
+* Features that no longer require acces to the Django/Site Admin, and can now be edited in the main site by staff users:
+  - Badge and Quest prerequisites (edit buttons can be dound beside each item's prereq list)
+  - Menu Items (these appear in the ☰ menu at the top right)
+  - Badge Types (edit button appears beside each badge type on the Badges page, and secondary Badge menu item on the main menu to the left)
+* Minor tweaks and bugfixes:
+  - Broken images and html in notifications [#755](https://github.com/bytedeck/bytedeck/issues/755)
+  - Added contact link to site footer [#542](https://github.com/bytedeck/bytedeck/issues/542)
+  - Change "/achievements/" urls to "/badges/" for consistancy.  Old links will still work via redirect [#997](https://github.com/bytedeck/bytedeck/issues/997)
+  - Fixed broken deletion of blocks. Fix hidden blocks. [#855](https://github.com/bytedeck/bytedeck/issues/855)
+
+### [1.15.0] 2022-06-09 - Summer student contribution 01
+* Custom webpages can now be created from the Admin > Custom Pages area.
+* Context-specific feedback to students when they see no available quests. [#817](https://github.com/bytedeck/bytedeck/issues/817)
+* Mark Ranges are now used in the XP Progress graph
+* New decks now start with some default Badge rarities. [#981](https://github.com/bytedeck/bytedeck/issues/981)
+* Minor tweaks and bugfixes:
+  - [#976](https://github.com/bytedeck/bytedeck/issues/976)
+  - [#942](https://github.com/bytedeck/bytedeck/issues/942)
+  - [#990](https://github.com/bytedeck/bytedeck/issues/990)
+  - [#894](https://github.com/bytedeck/bytedeck/issues/894)
+  - [#864](https://github.com/bytedeck/bytedeck/issues/864)
+  - [#545](https://github.com/bytedeck/bytedeck/issues/545)
+  - [#943](https://github.com/bytedeck/bytedeck/issues/943)
+  - [#257](https://github.com/bytedeck/bytedeck/issues/257)
+  - [#963](https://github.com/bytedeck/bytedeck/issues/963)
+  - [#964](https://github.com/bytedeck/bytedeck/issues/964)
+
+
+### [1.14.1] 2022-05-14
+* Make usernames case insensitive (more mobile friendly due to auto-capitalization on phones)
+* Add loading indicator to Notifications drop down [#896](https://github.com/bytedeck/bytedeck/issues/896)
+* Bugfixes:
+  - Fix loophole allowing students to start quests without a course via maps [#892](https://github.com/bytedeck/bytedeck/issues/892)
+  - Trigger a recalculation of available quests for all students when a new quest is created without prereqs [#936](https://github.com/bytedeck/bytedeck/issues/936)
+  - Returned quests remembers  XP value entered by student [#915](https://github.com/bytedeck/bytedeck/issues/915)
+  - Remove app from prerequisite name [#944](https://github.com/bytedeck/bytedeck/issues/944)
+
+### [1.14.0] 2022-02-21
+* New Site Config option to limit displayed marks to 100%
+* Improved mobile menus (bigger fonts, better organized)
+* Change contact menu item to link to Github Discussions
+* Dependancy upgrades:
+  * Upgrade Django to 3.2 LTS (support to Apr 2024)
+  * Upgrade Celery to V5 (mostly a security fix)
+  * Upgrade various minor dependancies
+
+### [1.13.0] 2022-01-16 - Mostly Map Stuff
+* Campaigns can now be prerequisites [#890](https://github.com/bytedeck/bytedeck/issues/890)
+* Add campaign XP to maps [#819](https://github.com/bytedeck/bytedeck/issues/819)
+* Sort unordered campaign maps alphabetically [#793](https://github.com/bytedeck/bytedeck/issues/793)
+* Add map transition field to Quests and Badges [#574](https://github.com/bytedeck/bytedeck/issues/574)
+* [bytedeck admin] Add new fields to Tenant model [#897](https://github.com/bytedeck/bytedeck/issues/897)
+
+### [1.12.3] 2021-12-14
+* Re-enable email notifications feature
+* Professionalize language [#887](https://github.com/bytedeck/bytedeck/issues/887)
+* [dev] Test coverage reporting to coveralls.io
+* Bugfixes:
+  - [#874](https://github.com/bytedeck/bytedeck/issues/874)
+  - [#862](https://github.com/bytedeck/bytedeck/issues/862)
+  - [#875](https://github.com/bytedeck/bytedeck/issues/875)
+  - [#885](https://github.com/bytedeck/bytedeck/issues/885)
+
+### [1.12.2] 2021-12-05
+* Add ReCaptcha to contact page to rpevent spam
+* Dependencies update (Datepicker Widget)[#881](https://github.com/bytedeck/bytedeck/issues/881)
+* Bugifxes:
+  - [#880](https://github.com/bytedeck/bytedeck/issues/880)
+  - [#877](https://github.com/bytedeck/bytedeck/issues/877)
+  - [#876](https://github.com/bytedeck/bytedeck/issues/876)
+  - [#865](https://github.com/bytedeck/bytedeck/issues/865)
+  - [#870](https://github.com/bytedeck/bytedeck/issues/870)
+  - [#866](https://github.com/bytedeck/bytedeck/issues/866)
+  - [#867](https://github.com/bytedeck/bytedeck/issues/867)
 
 ### [1.12.1] 2021-11-24
 * Add number indicator on quest tabs [#823](https://github.com/bytedeck/bytedeck/issues/823)
@@ -52,7 +253,7 @@ This file chronologically records all notable changes to this website, including
   - [#788](https://github.com/bytedeck/bytedeck/issues/788)
 
 ### [1.11.1] 2020-12-15
-* [teachers] Submission summary page improvements 
+* [teachers] Submission summary page improvements
 * Minor styling tweaks
 
 ### [1.11.0] 2020-12-13
@@ -72,7 +273,7 @@ This file chronologically records all notable changes to this website, including
 * [bugfix] Archived announcement pagination working
 * [bugfix] Overlapping announcement menus
 * [dev] Refactor contenttypes app/table to hopefully fix several bugs
- 
+
 ### [1.10.1] 2020-11-22
 * Announcement emails only to current students
 * Don't archive draft announcements
@@ -81,7 +282,7 @@ This file chronologically records all notable changes to this website, including
 * [bugfix] Funky announcement menu accordian problem
 * [dev] use public CDN instead of local for several resource
 * [dev] version css to bust cache when changed
- 
+
 ### [1.10.0] 2020-11-17 - AWS
 * [dev] Move to AWS
 
@@ -173,7 +374,7 @@ This file chronologically records all notable changes to this website, including
 ### [1.4.0] 2020-06-01
 * [teachers] Badges now have an import ID and can be updated by export/import
 * [dev] Default graphics updated to ByteDeck
-* Bugfixes: 
+* Bugfixes:
   - [#532](https://github.com/timberline-secondary/hackerspace/issues/532)
   - [#529](https://github.com/timberline-secondary/hackerspace/issues/529)
   - [#525](https://github.com/timberline-secondary/hackerspace/issues/525)
@@ -182,7 +383,7 @@ This file chronologically records all notable changes to this website, including
 
 
 ### [1.3.1] 2020-05-23
-* Bugfixes: 
+* Bugfixes:
   - [#508](https://github.com/timberline-secondary/hackerspace/issues/508)
   - [#512](https://github.com/timberline-secondary/hackerspace/issues/512)
   - [#517](https://github.com/timberline-secondary/hackerspace/issues/517)
@@ -246,7 +447,7 @@ This file chronologically records all notable changes to this website, including
 ### [1.0.0] 2020-04-05 - Multi tenancy
 * Multi-tenant support!
 * Bazillians of small bugfixes and tweaks to existing features
- 
+
 ### [0.25.1] 2020-03-29
 * [bugfix] Use new custom course XP in profiles and chart
 
@@ -264,7 +465,7 @@ This file chronologically records all notable changes to this website, including
 * [bugfix] License in footer should be GPL 3
 * [bugfix] Edit button on flat pages visible for all users
 * [bugfix] Removes extra ordinal in last repeat of quest
-* [bugfix] Global chillax line setting in config 
+* [bugfix] Global chillax line setting in config
 
 ### [0.24.0] 2020-01-24
 
@@ -487,7 +688,7 @@ This file chronologically records all notable changes to this website, including
 * [bugfix] Map creation was showing non-visible quests
 * [bugfix] Add manual course XP adjustment to grade calcs
 * Other minor tweaks
- 
+
 ### [0.7.0] 2017-05-28
 
 * Updated Django to 1.11 LTS (support to 2020)

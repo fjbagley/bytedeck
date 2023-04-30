@@ -1,12 +1,12 @@
 import json
 import uuid
+
 from django.utils.decorators import method_decorator
 from django.views.generic.list import ListView
 
 import numpy as np
 
 from django.contrib import messages
-from django.contrib.admin.views.decorators import staff_member_required
 from django.contrib.auth import get_user_model
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth.mixins import LoginRequiredMixin, UserPassesTestMixin
@@ -19,27 +19,69 @@ from django.urls import reverse, reverse_lazy
 from django.views.generic import DetailView
 from django.views.generic.edit import CreateView, DeleteView, UpdateView
 
+from hackerspace_online.decorators import staff_member_required
+
 from badges.models import BadgeAssertion
 from comments.models import Comment, Document
 from courses.models import Block
 from notifications.signals import notify
+from prerequisites.views import ObjectPrereqsFormView
 from siteconfig.models import SiteConfig
 from tenant.views import NonPublicOnlyViewMixin, non_public_only_view
 
 from .forms import (QuestForm, SubmissionForm, SubmissionFormCustomXP, SubmissionFormStaff,
-                    SubmissionQuickReplyForm, TAQuestForm)
-from .models import Quest, QuestSubmission, Category
+                    SubmissionQuickReplyForm, SubmissionQuickReplyFormStudent, TAQuestForm, CommonDataForm)
+from .models import Quest, QuestSubmission, Category, CommonData
 
 User = get_user_model()
 
 
 def is_staff_or_TA(user):
-    return user.is_staff or user.profile.is_TA
+    if user.is_staff:
+        return True
+
+    try:
+        if user.profile.is_TA:
+            return True
+    except AttributeError:  # probably because the user is not logged in, so AnonymousUser and has no profile
+        pass
+
+    return False
 
 
 @method_decorator(staff_member_required, name='dispatch')
 class CategoryList(NonPublicOnlyViewMixin, LoginRequiredMixin, ListView):
     model = Category
+
+
+class CategoryDetail(NonPublicOnlyViewMixin, LoginRequiredMixin, DetailView):
+    """The only category view non-staff users should have access to
+
+    A view that contains campaign information as well as a comprehensive list of
+    quests in a given campaign that eschews the complexity and unreliability of maps,
+    and changes dynamically based on the credentials of the user accessing it.
+    """
+    model = Category
+
+    def get_context_data(self, **kwargs):
+        """Sets context data passed to the Category Detail view template
+
+        Currently only exists as a picker for which list of quests those who access the view will see:
+        - Staff users will see a complete list of quests currently in the viewed campaign
+        - Students or other non-staff users will only see active quests
+
+        Returns a dictionary containing default context info as well as a queryset that contains the
+        appropriate quests a user will see; "category_displayed_quests".
+        """
+        if self.request.user.is_staff:
+            kwargs['category_displayed_quests'] = Quest.objects.filter(campaign=self.object)
+        else:
+            # students shouldn't be able to see inactive quests when they access this view
+            # filtering before calling get_active, while likely less costly, changes the object
+            # from type QuestManager to a QuestQueryset, which doesn't have the get_active method
+            kwargs['category_displayed_quests'] = Quest.objects.get_active().filter(campaign=self.object)
+
+        return super().get_context_data(**kwargs)
 
 
 @method_decorator(staff_member_required, name='dispatch')
@@ -49,7 +91,7 @@ class CategoryCreate(NonPublicOnlyViewMixin, CreateView):
     success_url = reverse_lazy('quests:categories')
 
     def get_context_data(self, **kwargs):
-        
+
         kwargs['heading'] = 'Create New Campaign'
         kwargs['submit_btn_value'] = 'Create'
 
@@ -159,6 +201,10 @@ class QuestUpdate(NonPublicOnlyViewMixin, UserPassesTestMixin, QuestFormViewMixi
         return form
 
 
+class QuestPrereqsUpdate(ObjectPrereqsFormView):
+    model = Quest
+
+
 class QuestCopy(QuestCreate):
 
     def get_form_kwargs(self):
@@ -167,6 +213,7 @@ class QuestCopy(QuestCreate):
         # by default, set the quest this was copied from as the new_quest_prerequisite
         # If this is changed in the form it will be overwritten in form_valid() from QuestFormViewMixin
         copied_quest = get_object_or_404(Quest, pk=self.kwargs['quest_id'])
+        kwargs['initial']['tags'] = copied_quest.tags.all()
         kwargs['initial']['new_quest_prerequisite'] = copied_quest
 
         new_quest = get_object_or_404(Quest, pk=self.kwargs['quest_id'])
@@ -203,6 +250,50 @@ class QuestSubmissionSummary(DetailView, UserPassesTestMixin):
         context['percent_returned'] = percent_returned
 
         return context
+
+
+@method_decorator(staff_member_required, name='dispatch')
+class CommonDataListView(ListView):
+    model = CommonData
+    template_name = "quest_manager/common_quest_info_list.html"
+
+
+@method_decorator(staff_member_required, name='dispatch')
+class CommonDataCreateView(CreateView):
+    model = CommonData
+    form_class = CommonDataForm
+    template_name = "quest_manager/common_quest_info_form.html"
+    success_url = reverse_lazy("quest_manager:commonquestinfo_list")
+
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        context['heading'] = "Create Common Quest Info"
+        context['submit_btn_value'] = "Create"
+        return context
+
+
+@method_decorator(staff_member_required, name='dispatch')
+class CommonDataUpdateView(UpdateView):
+    model = CommonData
+    form_class = CommonDataForm
+    template_name = "quest_manager/common_quest_info_form.html"
+    success_url = reverse_lazy("quest_manager:commonquestinfo_list")
+
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        context['heading'] = "Update Common Quest Info"
+        context['submit_btn_value'] = "Update"
+        return context
+
+    def get_success_url(self):
+        return self.request.GET.get('next', self.success_url)
+
+
+@method_decorator(staff_member_required, name='dispatch')
+class CommonDataDeleteView(DeleteView):
+    model = CommonData
+    template_name = "quest_manager/common_quest_info_delete.html"
+    success_url = reverse_lazy("quest_manager:commonquestinfo_list")
 
 
 @non_public_only_view
@@ -333,6 +424,8 @@ def quest_list(request, quest_id=None, template="quest_manager/quests.html"):
     past_submissions = QuestSubmission.objects.all_completed_past(request.user)
     past_submissions_count = past_submissions.count()
 
+    quick_reply_form = SubmissionQuickReplyFormStudent(request.POST or None)
+
     if in_progress_tab_active:
         in_progress_submissions = paginate(in_progress_submissions, page)
         # available_quests = []
@@ -363,8 +456,10 @@ def quest_list(request, quest_id=None, template="quest_manager/quests.html"):
     # num_inprogress = QuestSubmission.objects.all_not_completed(request.user).count()
     # num_completed = QuestSubmission.objects.all_completed(request.user).count()
 
+    awaiting_approval = QuestSubmission.objects.filter(user=request.user, is_approved=False, is_completed=True).exists()
     context = {
         "heading": "Quests",
+        "awaiting_approval": awaiting_approval,
         "available_quests": available_quests,
         "remove_hidden": remove_hidden,
         "num_available": available_quests_count,
@@ -382,6 +477,7 @@ def quest_list(request, quest_id=None, template="quest_manager/quests.html"):
         "completed_tab_active": completed_tab_active,
         "past_tab_active": past_tab_active,
         "drafts_tab_active": drafts_tab_active,
+        "quick_reply_form": quick_reply_form
     }
     return render(request, template, context)
 
@@ -549,9 +645,10 @@ def approve(request, submission_id):
                         request,
                         ("Badge " + str(new_assertion) + " granted to " + str(new_assertion.user))
                     )
-                    comment_text_addition += "<p></br><i class='fa fa-certificate text-warning'></i> The <b>" + \
+                    rarity_icon = badge.get_rarity_icon()
+                    comment_text_addition += "<p></br>" + rarity_icon + "The <b>" + \
                                              badge.name + "</b> badge was granted for this quest " + \
-                                             "<i class='fa fa-certificate text-warning'></i></p>"
+                                             rarity_icon + "</p>"
 
             # handle with quest comments
             blank_comment_text = ""
@@ -807,8 +904,10 @@ def complete(request, submission_id):
 
         if submission.quest.xp_can_be_entered_by_students and not submission.is_approved:
             form = SubmissionFormCustomXP(request.POST, request.FILES)
-        else:
+        elif request.FILES:
             form = SubmissionForm(request.POST, request.FILES)
+        else:
+            form = SubmissionQuickReplyFormStudent(request.POST)
 
         if form.is_valid():
             comment_text = form.cleaned_data.get('comment_text')
@@ -921,6 +1020,7 @@ def complete(request, submission_id):
 @non_public_only_view
 @login_required
 def start(request, quest_id):
+
     quest = get_object_or_404(Quest, pk=quest_id)
 
     if not quest.is_available(request.user):
@@ -1083,7 +1183,8 @@ def submission(request, submission_id=None, quest_id=None):
     else:
         initial = {'comment_text': sub.draft_text}
         if sub.quest.xp_can_be_entered_by_students and not sub.is_approved:
-            initial['xp_requested'] = sub.quest.xp
+            # Use the xp requested from the submission. Default to quest xp
+            initial['xp_requested'] = sub.xp_requested or sub.quest.xp
             main_comment_form = SubmissionFormCustomXP(request.POST or None, initial=initial, minimum_xp=sub.quest.xp)
         else:
             main_comment_form = SubmissionForm(request.POST or None, initial=initial)

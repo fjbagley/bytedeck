@@ -1,4 +1,5 @@
 
+{% load utility_tags %}
 <div class="media">
   <div class="media-left">
     <img class="media-object icon-lg img-rounded" src="{{ quest.get_icon_url }}" alt="icon" />
@@ -19,12 +20,17 @@
         <ul class="list-unstyled">
           <li><h4>XP: {{quest.xp}}{% if quest.xp_can_be_entered_by_students %}+ <small>(student entered)</small>{% endif %}
           </h4></li>
-          <li>Campaign: {% if quest.campaign %}{{ quest.campaign }} {% else %}-{% endif %}</li>
-          <li>Expiry: {{quest.date_expired}}</li>
+          <li>Campaign: {% if quest.campaign %}{% if user.is_staff %}<a href="{% url 'quests:category_detail' quest.campaign.id %}">{{ quest.campaign }}</a>{% else %}{{ quest.campaign }}{% endif %}{% else %}-{% endif %}</li>
+          {% if request.user.is_staff %}
+          <li>{% tag_name %}s: {% with quest as object %}{% include 'tags/snippets/tag-list.html' %}{% endwith %}</li>
+          {% else %}
+          <li>{% tag_name %}s: {% with quest as object %}{% include 'tags/snippets/tag-list.html' with user_obj=request.user %}{% endwith %}</li>
+          {% endif %}
         </ul>
       </div>
       <div class="col-sm-6">
         <ul class="list-unstyled">
+          <li>Expiry: {{quest.date_expired}}</li>
           <li>Repeatable: {% if quest.max_repeats == 0 %}No
                  {% else %}
                    {% if quest.max_repeats == -1 %} Unlimited
@@ -40,14 +46,9 @@
               {% endif %}
           </li>
           {% endif %}
-          <li>Requirements:
-                {% for p in quest.prereqs %}
-                  {% if forloop.first %}<ul class="left-aligned"><small>{% endif %}
-                  <li><a href="{{ p.get_prereq.get_absolute_url }}">{{ p }}</a></li>
-                  {% if forloop.last %}</small></ul>{% endif %}
-                {% empty %}
-                  None
-                {% endfor %}</li>
+          <li>Prerequisites:
+                {% if request.user.is_staff %}<a class="btn btn-info btn-xs" href="{% url 'quests:quest_prereqs_update' quest.id %}">Edit</a>{% endif %}
+                {% with quest as object %}{% include 'prerequisites/current_prereq_list.html' %}{% endwith %}
         </ul>
       </div>
     </div>

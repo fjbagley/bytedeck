@@ -1,49 +1,47 @@
+from django.http import HttpResponseRedirect
 from django.contrib import messages
-from django.contrib.admin.views.decorators import staff_member_required
 from django.contrib.auth import get_user_model
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth.mixins import LoginRequiredMixin
 from django.contrib.contenttypes.models import ContentType
 from django.core.exceptions import ObjectDoesNotExist
 from django.http import Http404
-from django.shortcuts import render, redirect, get_object_or_404
+from django.shortcuts import render, redirect, get_object_or_404, reverse
 from django.utils.decorators import method_decorator
 from django.views.generic import ListView
-from django.views.generic.edit import UpdateView, DeleteView
+from django.views.generic.edit import UpdateView, DeleteView, FormView
 from django.urls import reverse_lazy
+
+from hackerspace_online.decorators import staff_member_required
 
 from quest_manager.models import QuestSubmission, Quest
 from tenant.views import NonPublicOnlyViewMixin, non_public_only_view
 
 from .models import CytoScape
-from .forms import GenerateQuestMapForm
+from .forms import GenerateQuestMapForm, QuestMapForm
 from .tasks import regenerate_all_maps
 
 User = get_user_model()
 
 
+@method_decorator(staff_member_required, name='dispatch')
 class ScapeUpdate(NonPublicOnlyViewMixin, UpdateView):
     model = CytoScape
-    fields = [
-        'name',
-        'initial_content_type', 'initial_object_id',
-        'parent_scape',
-        'is_the_primary_scape',
-        'autobreak'
-    ]
+    form_class = QuestMapForm
 
     @method_decorator(staff_member_required)
     def dispatch(self, *args, **kwargs):
-        return super(ScapeUpdate, self).dispatch(*args, **kwargs)
+        return super().dispatch(*args, **kwargs)
 
 
+@method_decorator(staff_member_required, name='dispatch')
 class ScapeDelete(NonPublicOnlyViewMixin, DeleteView):
     model = CytoScape
     success_url = reverse_lazy('djcytoscape:list')
 
     @method_decorator(staff_member_required)
     def dispatch(self, *args, **kwargs):
-        return super(ScapeDelete, self).dispatch(*args, **kwargs)
+        return super().dispatch(*args, **kwargs)
 
 
 class ScapeList(NonPublicOnlyViewMixin, LoginRequiredMixin, ListView):
@@ -99,7 +97,7 @@ def quest_map_personalized(request, scape_id, user_id):
             'class_styles': scape.class_styles_json,
             'completed_quests': quest_ids,
             'fullscreen': True,
-            'personalized_user': personalized_user,  
+            'personalized_user': personalized_user,
         }
 
         return render(request, 'djcytoscape/quest_map.html', context)
@@ -116,7 +114,7 @@ def quest_map_interlink(request, ct_id, obj_id, originating_scape_id):
     except ObjectDoesNotExist:
         if request.user.is_staff:
             # the map doesn't exist, so ask to generate it.
-            return generate_map(request, ct_id=ct_id, obj_id=obj_id, scape_id=originating_scape_id)
+            return ScapeGenerateMap.as_view()(request, ct_id=ct_id, obj_id=obj_id, scape_id=originating_scape_id)
         else:
             raise Http404
 
@@ -129,59 +127,65 @@ def primary(request):
     if not CytoScape.objects.exists() and Quest.objects.filter(import_id='bee53060-c332-4f75-85e1-6a8f9503ebe1').exists():
         welcome_quest = Quest.objects.get(import_id='bee53060-c332-4f75-85e1-6a8f9503ebe1')
         CytoScape.generate_map(welcome_quest, 'Main')
-    
+
     try:
         scape = CytoScape.objects.get(is_the_primary_scape=True)
         return quest_map(request, scape.id)
     except ObjectDoesNotExist:
-        return generate_map(request)
+        return ScapeGenerateMap.as_view()(request)
 
 
-@non_public_only_view
-@staff_member_required
-def generate_map(request, ct_id=None, obj_id=None, scape_id=None, autobreak=True):
-    """
-    :param request:
-    :param ct_id: Content Type for Generic Foreign Key (initial object)
-    :param obj_id: Object ID for Generic Foreign Key (initial object)
-    :param scape_id: originating scape/quest
-    :return:
-    """
-    interlink = False
-    if request.method == 'POST':
-        form = GenerateQuestMapForm(request.POST)
-        # check whether it's valid:
-        if form.is_valid():
-            ct = form.cleaned_data['initial_content_type']
-            obj_id = form.cleaned_data['initial_object_id']
-            scape = form.cleaned_data['scape']
-            name = form.cleaned_data['name']
-            obj = ct.get_object_for_this_type(id=obj_id)
-            if not name:
-                name = str(obj)
-            new_scape = CytoScape.generate_map(initial_object=obj, name=name, parent_scape=scape, autobreak=autobreak)
-            return redirect('djcytoscape:quest_map', scape_id=new_scape.id)
+class ScapeGenerateMap(NonPublicOnlyViewMixin, FormView):
+    form_class = GenerateQuestMapForm
+    template_name = 'djcytoscape/generate_new_form.html'
 
-    else:
+    @method_decorator(staff_member_required)
+    def dispatch(self, *args, **kwargs):
+        """
+        :param request:
+        :param ct_id: Content Type for Generic Foreign Key (initial object)
+        :param obj_id: Object ID for Generic Foreign Key (initial object)
+        :param scape_id: originating scape/quest
+        :return:
+        """
+        self.ct_id = kwargs.get('ct_id')
+        self.obj_id = kwargs.get('obj_id')
+        self.scape_id = kwargs.get('scape_id')
+        self.autobreak = kwargs.get('autobreak', True)
+        self.interlink = False
 
-        initial = {}
-        if ct_id and obj_id:
-            ct = get_object_or_404(ContentType, pk=ct_id)
-            initial['initial_content_type'] = ct
-            initial['initial_object_id'] = obj_id
-        if scape_id:
-            scape = get_object_or_404(CytoScape, pk=scape_id)
-            initial['scape'] = scape
-            interlink = True
+        return super().dispatch(*args, **kwargs)
 
-        form = GenerateQuestMapForm(initial=initial)
+    def get_form_kwargs(self):
+        kwargs = super().get_form_kwargs().copy()
+        kwargs['autobreak'] = self.autobreak
 
-    context = {
-        'form': form,
-        'interlink': interlink,
-    }
+        if self.ct_id and self.obj_id:
+            ct = get_object_or_404(ContentType, pk=self.ct_id)
+            obj = get_object_or_404(ct.model_class(), pk=self.obj_id)
+            kwargs['initial']['initial_content_object'] = obj
 
-    return render(request, 'djcytoscape/generate_new_form.html', context)
+        if self.scape_id:
+            kwargs['initial']['parent_scape'] = get_object_or_404(CytoScape, pk=self.scape_id)
+            self.interlink = True
+
+        return kwargs
+
+    def get_context_data(self, **kwargs):
+        ctx = super().get_context_data(**kwargs).copy()
+        ctx['interlink'] = self.interlink
+        return ctx
+
+    def form_valid(self, form):  # virtually the same as super().form_valid except we're caching form.save() obj for get_success_url()
+        self.object = form.save()
+        messages.success(
+            self.request,
+            f"New map {self.object.name} was successfully generated."
+        )
+        return HttpResponseRedirect(self.get_success_url())
+
+    def get_success_url(self):
+        return reverse('djcytoscape:quest_map', args=[self.object.id])
 
 
 @non_public_only_view

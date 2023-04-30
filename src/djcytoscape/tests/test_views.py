@@ -2,15 +2,13 @@ from django.contrib.auth import get_user_model
 from django.contrib.contenttypes.models import ContentType
 from django.urls import reverse
 
+from django_tenants.test.cases import TenantTestCase
+from django_tenants.test.client import TenantClient
 from model_bakery import baker
-from tenant_schemas.test.cases import TenantTestCase
-from tenant_schemas.test.client import TenantClient
-
-from hackerspace_online.tests.utils import ViewTestUtilsMixin
 
 from djcytoscape.models import CytoScape
 
-from .test_models import generate_real_primary_map
+from hackerspace_online.tests.utils import ViewTestUtilsMixin, generate_form_data
 
 User = get_user_model()
 
@@ -40,12 +38,12 @@ class ViewTests(ViewTestUtilsMixin, TenantTestCase):
         self.assertRedirectsLogin('djcytoscape:quest_map_interlink', args=[1, 1, 1])
 
         self.assertRedirectsLogin('djcytoscape:list')
-        self.assertRedirectsAdmin('djcytoscape:regenerate', args=[1])
-        self.assertRedirectsAdmin('djcytoscape:regenerate_all')
-        self.assertRedirectsAdmin('djcytoscape:generate_map', kwargs={'quest_id': 1, 'scape_id': 1})
-        self.assertRedirectsAdmin('djcytoscape:generate_unseeded')
-        self.assertRedirectsAdmin('djcytoscape:update', args=[1])
-        self.assertRedirectsAdmin('djcytoscape:delete', args=[1])
+        self.assertRedirectsLogin('djcytoscape:regenerate', args=[1])
+        self.assertRedirectsLogin('djcytoscape:regenerate_all')
+        self.assertRedirectsLogin('djcytoscape:generate_map', kwargs={'quest_id': 1, 'scape_id': 1})
+        self.assertRedirectsLogin('djcytoscape:generate_unseeded')
+        self.assertRedirectsLogin('djcytoscape:update', args=[1])
+        self.assertRedirectsLogin('djcytoscape:delete', args=[1])
 
     def test_all_page_status_codes_for_students(self):
         success = self.client.login(username=self.test_student1.username, password=self.test_password)
@@ -59,12 +57,12 @@ class ViewTests(ViewTestUtilsMixin, TenantTestCase):
         self.assert200('djcytoscape:primary')
         self.assert200('djcytoscape:quest_map', args=[self.map.id])
 
-        self.assertRedirectsAdmin('djcytoscape:update', args=[self.map.id])
-        self.assertRedirectsAdmin('djcytoscape:delete', args=[self.map.id])
-        self.assertRedirectsAdmin('djcytoscape:regenerate', args=[self.map.id])
-        self.assertRedirectsAdmin('djcytoscape:regenerate_all')
-        self.assertRedirectsAdmin('djcytoscape:generate_map', kwargs={'quest_id': 1, 'scape_id': 1})
-        self.assertRedirectsAdmin('djcytoscape:generate_unseeded')
+        self.assert403('djcytoscape:update', args=[self.map.id])
+        self.assert403('djcytoscape:delete', args=[self.map.id])
+        self.assert403('djcytoscape:regenerate', args=[self.map.id])
+        self.assert403('djcytoscape:regenerate_all')
+        self.assert403('djcytoscape:generate_map', kwargs={'quest_id': 1, 'scape_id': 1})
+        self.assert403('djcytoscape:generate_unseeded')
 
     def test_all_page_status_codes_for_teachers(self):
         # log in a teacher
@@ -82,11 +80,67 @@ class ViewTests(ViewTestUtilsMixin, TenantTestCase):
         self.assert200('djcytoscape:update', args=[self.map.id])
         self.assert200('djcytoscape:delete', args=[self.map.id])
 
+        self.assert200('djcytoscape:generate_unseeded')
+        self.assert200('djcytoscape:generate_map', kwargs={'quest_id': 1, 'scape_id': self.map.id})
+
         # These will need their own tests:
         # self.assert200('djcytoscape:regenerate', args=[self.map.id])
         # self.assert200('djcytoscape:regenerate_all')
-        # self.assert200('djcytoscape:generate_map', kwargs={'quest_id': 1, 'scape_id': 1})
-        # self.assert200('djcytoscape:generate_unseeded')
+
+    def test_ScapeGenerateMap__POST(self):
+        """ Assert a teacher can generate a map using ScapeGenerateMapView """
+        from djcytoscape.forms import GenerateQuestMapForm
+
+        self.client.force_login(self.test_teacher)
+
+        # generate form data
+        content_type = ContentType.objects.filter(CytoScape.ALLOWED_INITIAL_CONTENT_TYPES).first()
+        object_ = content_type.model_class().objects.first()
+
+        form_data = generate_form_data(model_form=GenerateQuestMapForm, name='New Name')
+        form_data.update({'initial_content_object': f'{content_type.id}-{object_.id}'})
+
+        # check if map name exists
+        self.assertFalse(CytoScape.objects.filter(name='New Name').exists())
+
+        # response tests
+        response = self.client.post(reverse('djcytoscape:generate_unseeded'), data=form_data)
+
+        # assert map exists
+        self.assertTrue(CytoScape.objects.filter(name='New Name').exists())
+
+        # assert values are the same as form data values
+        map_ = CytoScape.objects.get(name='New Name')
+        self.assertEqual(map_.initial_content_type, content_type)
+        self.assertEqual(map_.initial_object_id, object_.id)
+
+        # assert redirects to quest_map page
+        self.assertRedirects(response, reverse('djcytoscape:quest_map', args=[map_.pk]))
+
+    def test_ScapeUpdateView__POST(self):
+        """ Assert a teacher can update a map using ScapeGenerateMapView """
+        from djcytoscape.forms import QuestMapForm
+
+        self.client.force_login(self.test_teacher)
+
+        # generate form data
+        content_type = ContentType.objects.filter(CytoScape.ALLOWED_INITIAL_CONTENT_TYPES).first()
+        object_ = content_type.model_class().objects.first()
+
+        form_data = generate_form_data(model_form=QuestMapForm, name='Updated Name')
+        form_data.update({'initial_content_object': f'{content_type.id}-{object_.id}'})
+
+        # response tests
+        response = self.client.post(reverse('djcytoscape:update', args=[self.map.pk]), data=form_data)
+        self.assertRedirects(response, reverse('djcytoscape:quest_map', args=[self.map.pk]))
+
+        # assert map exists
+        self.assertTrue(CytoScape.objects.filter(name='Updated Name').exists())
+
+        # assert values are updated
+        map_ = CytoScape.objects.get(name='Updated Name')
+        self.assertEqual(map_.initial_content_type, content_type)
+        self.assertEqual(map_.initial_object_id, object_.id)
 
 
 class PrimaryViewTests(ViewTestUtilsMixin, TenantTestCase):
@@ -101,7 +155,7 @@ class PrimaryViewTests(ViewTestUtilsMixin, TenantTestCase):
         success = self.client.login(username=anyone.username, password="password")
         self.assertTrue(success)
 
-        # Access the primary map view    
+        # Access the primary map view
         self.assert200('djcytoscape:primary')
 
         # Should have generated the "Main" map
@@ -112,6 +166,8 @@ class PrimaryViewTests(ViewTestUtilsMixin, TenantTestCase):
 class RegenerateViewTests(ViewTestUtilsMixin, TenantTestCase):
 
     def setUp(self):
+        from .test_models import generate_real_primary_map
+
         self.map = generate_real_primary_map()
         self.client = TenantClient(self.tenant)
         self.staff_user = User.objects.create_user(username="test_staff_user", password="password", is_staff=True)
@@ -125,10 +181,10 @@ class RegenerateViewTests(ViewTestUtilsMixin, TenantTestCase):
 
     def test_regenerate_with_deleted_object(self):
         bad_map = CytoScape.objects.create(
-            name="bad map", 
-            initial_content_type=ContentType.objects.get(app_label='quest_manager', model='quest'), 
+            name="bad map",
+            initial_content_type=ContentType.objects.get(app_label='quest_manager', model='quest'),
             initial_object_id=99999,  # a non-existant object
-        ) 
+        )
         self.assertRedirects(
             response=self.client.get(reverse('djcytoscape:regenerate', args=[bad_map.id])),
             expected_url=reverse('djcytoscape:primary'),
@@ -142,10 +198,10 @@ class RegenerateViewTests(ViewTestUtilsMixin, TenantTestCase):
 
     def test_regenerate_all_with_bad_map(self):
         CytoScape.objects.create(
-            name="bad map", 
-            initial_content_type=ContentType.objects.get(app_label='quest_manager', model='quest'), 
+            name="bad map",
+            initial_content_type=ContentType.objects.get(app_label='quest_manager', model='quest'),
             initial_object_id=99999,  # a non-existant object
-        ) 
+        )
         self.assertRedirects(
             response=self.client.get(reverse('djcytoscape:regenerate_all')),
             expected_url=reverse('djcytoscape:primary'),

@@ -1,0 +1,60 @@
+{% extends "flatpages/base.html" %}
+{% load crispy_forms_tags %}
+
+{% block head_title%}{{ flatpage.title }} | {% endblock%}
+
+{% block heading_inner %}
+  {{ flatpage.title }}
+
+  {% if user.is_staff %}
+    <a class="btn btn-info btn-sm" href="{% url 'utilities:flatpage_edit' pk=flatpage.pk %}" role="button" title = "Edit this page" >
+      <i class="fa fa-edit"></i>
+    </a>
+  {% endif %}
+{% endblock %}
+
+{% block content %}
+  {{ flatpage.content|safe }}
+{% endblock %}
+
+
+{% block content_last %}{% endblock %}
+
+{% block js %}
+  <script>
+    // Generate a Table of Contents from H3 headings when this is added to the template:
+    // <div id="TOC"></div>
+
+    var ToC =
+      "<nav role='navigation' class='table-of-contents'>" +
+        "<h4>Contents:</h4>" +
+        "<ul>";
+
+    $("#main h3").each(function() {
+
+        var $el = $(this);
+        var title = $el.text();
+        $el.attr("id", title);
+
+        var tocEntry =
+            "<li>" +
+            "<a href='#" + title + "'>" +
+            title +
+            "</a>" +
+            "</li>";
+
+        ToC += tocEntry;
+
+    });
+
+
+    ToC +=
+        "</ul>" +
+        "</nav>";
+
+    $("#TOC").append(ToC);
+
+  </script>
+
+
+{% endblock %}

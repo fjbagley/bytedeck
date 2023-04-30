@@ -1,4 +1,8 @@
+from copy import copy
+from allauth.socialaccount.models import SocialApp
+from allauth.socialaccount.providers.google.provider import GoogleProvider
 from django.contrib.auth import get_user_model
+from django.contrib.sites.models import Site
 from django.core.cache import cache
 from django.core.exceptions import MultipleObjectsReturned
 from django.db import connection, models
@@ -6,11 +10,36 @@ from django.db.models.signals import post_save
 from django.dispatch import receiver
 from django.shortcuts import get_object_or_404
 from django.templatetags.static import static
+from django.conf import settings
 
+from django_tenants.utils import get_public_schema_name, schema_context
 from redis import exceptions as redis_exceptions
-from tenant_schemas.utils import get_public_schema_name
+
 
 User = get_user_model()
+
+
+def get_default_deck_owner():
+    """
+        This is run once during site initialization
+
+        Also need to initialize owner if none exists yet.
+        (Since initialization.py loads after everything else)
+    """
+
+    # handle existing decks by getting an existing staff user that is NOT bytedeck_admin:
+    admin_username = settings.TENANT_DEFAULT_ADMIN_USERNAME
+    non_admin_staff_qs = User.objects.filter(is_staff=True).exclude(username=admin_username)
+
+    if non_admin_staff_qs.exists():  # i.e. there are more staff than just the admin user
+        return non_admin_staff_qs.first().pk  # return the first one (assumes sorted by pk, so should be the oldest one?)
+
+    else:  # no other staff users available yet, so we'll have to create them
+        deck_owner = User.objects.create(
+            username=settings.TENANT_DEFAULT_OWNER_USERNAME,
+            is_staff=True,
+        )
+        return deck_owner.pk
 
 
 def get_superadmin():
@@ -128,14 +157,51 @@ class SiteConfig(models.Model):
         help_text="Set up at least one Mark Range in admin for this to do anything."
     )
 
+    enable_google_signin = models.BooleanField(
+        verbose_name="Enable sign-in via Google",
+        default=False,
+        help_text=(
+            "If you want to enable the ability to 'Sign in with Google' on your deck, please post a request "
+            "<a href='https://github.com/bytedeck/bytedeck/discussions/1309' target='_blank'>here</a>"
+        )
+    )
+
     approve_oldest_first = models.BooleanField(
         verbose_name="Sort quests awaiting approval with oldest on top", default=False,
         help_text="Check this if you want to have the quest that have been waiting the longest to appear on top of the list."
     )
 
     display_marks_calculation = models.BooleanField(
-        verbose_name="Display marks calculation page", default=False,
-        help_text="Check this if you want to let students view their mark calculations."
+        verbose_name="Use mark percentages", default=False,
+        help_text='By default, the site only uses XP.  Check this if you also want to use percentages for student marks. \
+            The conversion of XP to a percentage depends on several other settings in your deck.  \
+            <a href="https://github.com/bytedeck/bytedeck/wiki/Using-Mark-Percentages" target="_blank">See here</a> for a full explanation. '
+    )
+
+    cap_marks_at_100_percent = models.BooleanField(
+        verbose_name="Cap marks at 100%", default=False,
+        help_text="By default, if a student has more than the expected XP in their course \
+            (for the amount of time that has passed in the semester so far) their mark will show greater than 100%.  \
+            Check this if you want to cap marks at 100%. This setting is only relevent if you are using mark percentages."
+    )
+
+    # Group is actually the Block model, but has been genericized and is now called Group
+    custom_name_for_group = models.CharField(
+        default="Group", max_length=20,
+        help_text="A custom name specific to your deck to replace \"Group\".  Groups can be used to assign a group of students \
+            to a specific teacher, and/or used as a prerequisite. For example, \"Block\", \"Cohort\", or \"Section\" \
+            might be a more suitable name than Groups, depending on your context."
+    )
+
+    custom_name_for_tag = models.CharField(
+        default="Tag", max_length=20,
+        help_text="A custom name specific to your deck to replace \"Tag\".   For example, \"Competency\", \"Learning Outcome\", \
+            or \"Skill\" might be a more suitable name, depending on how you use the Tags feature."
+    )
+
+    deck_owner = models.ForeignKey(
+        User, on_delete=models.PROTECT, default=get_default_deck_owner, limit_choices_to={'is_staff': True}, related_name="deck_owner",
+        help_text="Only the current deck owner can change this setting."
     )
 
     def __str__(self):
@@ -188,6 +254,21 @@ class SiteConfig(models.Model):
         else:  # assume it's an id
             self.active_semester = get_object_or_404(Semester, id=semester)
         self.save()
+
+    def _propagate_google_provider(self):
+        """
+        Copies the SocialApp config for GoogleProvider from the public schema down to
+        the tenant's schema SocialApp
+        """
+        with schema_context(get_public_schema_name()):
+            social_app = SocialApp.objects.get_current(provider=GoogleProvider.id)
+            social_app_clone = copy(social_app)
+            social_app_clone.pk = None
+
+        # Sync the public SocialApps with the tenant SocialApp
+        SocialApp.objects.filter(provider=GoogleProvider.id).delete()
+        social_app_clone.save()
+        social_app_clone.sites.add(Site.objects.get_current())
 
     @classmethod
     def cache_key(cls):

@@ -11,16 +11,18 @@ or they could be moved into a `test_urls.py` module.
 """
 
 from django.contrib.auth import get_user_model
+from django.contrib.auth.models import AnonymousUser
+from django.contrib.contenttypes.models import ContentType
 from django.urls import reverse
 
-from mock import patch
+from django_tenants.test.cases import TenantTestCase
+from django_tenants.test.client import TenantClient
+from unittest.mock import patch
 from model_bakery import baker
-from tenant_schemas.test.cases import TenantTestCase
-from tenant_schemas.test.client import TenantClient
 
-from hackerspace_online.tests.utils import ViewTestUtilsMixin
+from hackerspace_online.tests.utils import ViewTestUtilsMixin, generate_form_data
 from notifications.models import Notification
-from quest_manager.models import Category, Quest, QuestSubmission
+from quest_manager.models import Category, CommonData, Quest, QuestSubmission, XPItem
 from siteconfig.models import SiteConfig
 
 User = get_user_model()
@@ -58,6 +60,9 @@ class QuestViewQuickTests(ViewTestUtilsMixin, TenantTestCase):
         self.test_student1 = User.objects.create_user('test_student', password=self.test_password)
         self.test_student2 = baker.make(User)
 
+        # put the student in a course in the active semester
+        baker.make('courses.CourseStudent', user=self.test_student1, semester=SiteConfig.get().active_semester)
+
         self.quest1 = baker.make(Quest)
         self.quest2 = baker.make(Quest)
 
@@ -66,7 +71,6 @@ class QuestViewQuickTests(ViewTestUtilsMixin, TenantTestCase):
 
     def test_all_quest_page_status_codes_for_anonymous(self):
         """ If not logged in then all views should redirect to home page  """
-
         self.assertRedirectsLogin('quests:quests')
 
     def test_all_quest_page_status_codes_for_students(self):
@@ -90,22 +94,24 @@ class QuestViewQuickTests(ViewTestUtilsMixin, TenantTestCase):
         self.assertEqual(self.client.get(reverse('quests:quest_detail', args=[q_pk])).status_code, 200)
 
         #  students shouldn't have access to these and should be redirected to login
-        self.assertEqual(self.client.get(reverse('quests:submitted')).status_code, 302)
-        self.assertEqual(self.client.get(reverse('quests:submitted_all')).status_code, 302)
-        self.assertEqual(self.client.get(reverse('quests:returned')).status_code, 302)
-        self.assertEqual(self.client.get(reverse('quests:approved')).status_code, 302)
-        self.assertEqual(self.client.get(reverse('quests:flagged')).status_code, 302)
+        self.assertEqual(self.client.get(reverse('quests:submitted')).status_code, 403)
+        self.assertEqual(self.client.get(reverse('quests:submitted_all')).status_code, 403)
+        self.assertEqual(self.client.get(reverse('quests:returned')).status_code, 403)
+        self.assertEqual(self.client.get(reverse('quests:approved')).status_code, 403)
+        self.assertEqual(self.client.get(reverse('quests:flagged')).status_code, 403)
         # self.assertEqual(self.client.get(reverse('quests:skipped')).status_code, 302)
         # self.assertEqual(self.client.get(reverse('quests:submitted_for_quest', args=[q_pk])).status_code, 302)
         # self.assertEqual(self.client.get(reverse('quests:returned_for_quest', args=[q_pk])).status_code, 302)
-        self.assertEqual(self.client.get(reverse('quests:approved_for_quest', args=[q_pk])).status_code, 302)
-        self.assertEqual(self.client.get(reverse('quests:approved_for_quest_all', args=[q_pk])).status_code, 302)
+        self.assertEqual(self.client.get(reverse('quests:approved_for_quest', args=[q_pk])).status_code, 403)
+        self.assertEqual(self.client.get(reverse('quests:approved_for_quest_all', args=[q_pk])).status_code, 403)
         # self.assertEqual(self.client.get(reverse('quests:skipped_for_quest', args=[q_pk])).status_code, 302)
 
         self.assertEqual(self.client.get(reverse('quests:start', args=[q2_pk])).status_code, 302)
         self.assertEqual(self.client.get(reverse('quests:hide', args=[q_pk])).status_code, 302)
         self.assertEqual(self.client.get(reverse('quests:unhide', args=[q_pk])).status_code, 302)
         self.assertEqual(self.client.get(reverse('quests:skip_for_quest', args=[q_pk])).status_code, 404)
+
+        self.assertEqual(self.client.get(reverse('quests:quest_prereqs_update', args=[q_pk])).status_code, 403)
 
         # 403 for CRUD views:
         self.assertEqual(self.client.get(reverse('quests:quest_create')).status_code, 403)
@@ -123,6 +129,7 @@ class QuestViewQuickTests(ViewTestUtilsMixin, TenantTestCase):
 
         self.assertEqual(self.client.get(reverse('quests:quest_delete', args=[q2_pk])).status_code, 200)
         self.assertEqual(self.client.get(reverse('quests:quest_copy', args=[q_pk])).status_code, 200)
+        self.assertEqual(self.client.get(reverse('quests:quest_prereqs_update', args=[q_pk])).status_code, 200)
 
     def test_start(self):
         # log in a student from setUp
@@ -138,6 +145,7 @@ class QuestViewQuickTests(ViewTestUtilsMixin, TenantTestCase):
         # if the quest has not been started yet, and it's available to the student,
         # (quests created with default settings should be to students, as long as they are registered in a course)
         # then should redirect to the new submission that this view creates
+
         response = self.client.get(reverse('quests:start', args=[self.quest1.pk]))
 
         # check that a submission was created (should only be one at this point, so use `get()`
@@ -152,6 +160,107 @@ class QuestViewQuickTests(ViewTestUtilsMixin, TenantTestCase):
         self.assertEqual(self.quest1.questsubmission_set.count(), 1)
         # the view should have redirect to the same submission:
         self.assertRedirects(response, sub.get_absolute_url())
+
+    def test_student_no_quests_help_text(self):
+        """
+            When student has no quests but have:
+
+            Quests in the In Progress Tab:
+                "You have no new quests available, but you can find some quests you have already started in your 'In Progress' tab above."
+
+            Hidden quests:
+                "You have no new quests available, but you do have hidden quests which you can view by hitting the 'Show Hidden Quests' button above."
+
+            No in-progress and no hidden quests, but quests awaiting approval:
+                "New quests will become available after your teacher approves your submission!"
+
+            Just no quests:
+                "There are currently no new quest available to you!"
+        """
+        url = reverse('quests:available')
+        user = self.test_student1
+
+        # login
+        success = self.client.login(username=user.username, password=self.test_password)
+        self.assertTrue(success)
+
+        # condition to see any of the 4
+        self.assertTrue(user.profile.has_current_course and not user.is_staff)
+
+        # make sure no available quests
+        Quest.objects.all().delete()
+        self.assertFalse(Quest.objects.get_available(user).exists())
+
+        # quest should be in 'in-progress'
+        quest = baker.make(Quest)
+        QuestSubmission.objects.create_submission(user, quest)
+
+        # conditions for msg to show
+        inprogress = QuestSubmission.objects.all_not_completed(user, blocking=True)  # should exist
+        available = Quest.objects.get_available(user)  # should not exist
+        self.assertTrue(inprogress.exists())
+        self.assertFalse(available.exists())
+
+        # check for help text
+        response = self.client.get(url)
+        self.assertContains(response, "No quests are available.")
+        help_text = "You have no new quests available, but you can find some quests you have already started in your 'In Progress' tab above."
+        self.assertContains(response, help_text)
+        QuestSubmission.objects.all().delete()
+        Quest.objects.all().delete()
+
+        # awaiting quest should be in 'completed' ===
+        quest_submission = baker.make(QuestSubmission, user=user, semester=SiteConfig.get().active_semester, is_completed=True, is_approved=False)
+
+        # add different users with submissions
+        [baker.make(QuestSubmission, semester=SiteConfig.get().active_semester, is_completed=True, is_approved=False) for i in range(3)]
+
+        # check for help text
+        response = self.client.get(url)
+        self.assertContains(response, "No quests are available.")
+        self.assertContains(response, "New quests will become available after your teacher approves your submission!")
+
+        quest_submission.delete()
+
+        # assert help text does not show up when no user has no awaiting approvals
+        response = self.client.get(url)
+        self.assertNotContains(response, "New quests will become available after your teacher approves your submission!")
+
+        # No new quests and conditions above do not apply ===
+
+        # assert last 3 conditions as false
+        available = Quest.objects.get_available(user)
+        inprogress = QuestSubmission.objects.all_not_completed(user, blocking=True)
+        approval = QuestSubmission.objects.filter(user=user, is_approved=False, is_completed=True)
+        self.assertFalse(available.exists())
+        self.assertFalse(inprogress.exists())
+        self.assertFalse(user.profile.num_hidden_quests() > 0)
+        self.assertFalse(approval.exists())
+
+        # check for help text
+        response = self.client.get(url)
+        self.assertContains(response, "No quests are available.")
+        self.assertContains(response, "There are currently no new quest available to you!")
+
+        # Only hidden quests #################################################
+
+        # add a new quest available to the user
+        quest = baker.make(Quest, name="hide me")
+        # but adding a new quest won't make it appear in their available list, because the available list is cached
+        # and doesn't recalculate during tests (celery tasks are not run), so let force a recalculation
+        from prerequisites.tasks import update_quest_conditions_for_user
+        update_quest_conditions_for_user(user.id)
+
+        # Make sure it's available
+        self.assertTrue(Quest.objects.get_available(user).exists())
+
+        # Now hide it
+        user.profile.hide_quest(quest.id)
+        self.assertEqual(user.profile.num_hidden_quests(), 1)  # Sanity check that the quest is hidden
+        self.assertFalse(Quest.objects.get_available(user).exists())  # Should not show up here cus hidden
+        response = self.client.get(url)
+        self.assertContains(response, "You have no new quests available")
+        self.assertContains(response, "but you do have hidden quests which you can view by hitting the 'Show Hidden Quests' button above.")
 
 
 class SubmissionViewTests(TenantTestCase):
@@ -200,14 +309,14 @@ class SubmissionViewTests(TenantTestCase):
         self.assertEqual(self.client.get(reverse('quests:submission_past', args=[s1_pk])).status_code, 200)
 
         # Students shouldn't have access to these
-        self.assertEqual(self.client.get(reverse('quests:flagged')).status_code, 302)
+        self.assertEqual(self.client.get(reverse('quests:flagged')).status_code, 403)
 
         # Student's own submission
         self.assertEqual(self.client.get(reverse('quests:skip', args=[s1_pk])).status_code, 404)
-        self.assertEqual(self.client.get(reverse('quests:approve', args=[s1_pk])).status_code, 302)
+        self.assertEqual(self.client.get(reverse('quests:approve', args=[s1_pk])).status_code, 403)
         self.assertEqual(self.client.get(reverse('quests:submission_past', args=[s1_pk])).status_code, 200)
-        self.assertEqual(self.client.get(reverse('quests:flag', args=[s1_pk])).status_code, 302)
-        self.assertEqual(self.client.get(reverse('quests:unflag', args=[s1_pk])).status_code, 302)
+        self.assertEqual(self.client.get(reverse('quests:flag', args=[s1_pk])).status_code, 403)
+        self.assertEqual(self.client.get(reverse('quests:unflag', args=[s1_pk])).status_code, 403)
         self.assertEqual(self.client.get(reverse('quests:complete', args=[s1_pk])).status_code, 404)
 
         # Not this student's submission
@@ -256,7 +365,7 @@ class SubmissionViewTests(TenantTestCase):
 
     def test_hidden_submission_does_not_contain_submit_button(self):
         """
-        Make sure that submit for completion button is hidden since it's not available
+        Make sure that submit for approval button is hidden since it's not available
         for students to submit anymore.
         """
         success = self.client.login(username=self.test_student1.username, password=self.test_password)
@@ -265,7 +374,7 @@ class SubmissionViewTests(TenantTestCase):
         s4_pk = self.sub4.pk
 
         response = self.client.get(reverse('quests:submission', args=[s4_pk]))
-        self.assertNotContains(response, 'Submit Quest for Completion')
+        self.assertNotContains(response, 'Submit Quest for Approval')
 
     def test_drop_button_not_visible_when_submission_approved(self):
         """
@@ -350,6 +459,25 @@ class SubmissionViewTests(TenantTestCase):
 
         # TODO: should redirect, not 404?
         self.assertEqual(self.client.get(reverse('quests:submission', args=[self.sub1.pk])).status_code, 404)
+
+    def test_submission_xp_entered_remains_even_when_submission_returned(self):
+
+        # log in a student
+        success = self.client.login(username=self.test_student1.username, password=self.test_password)
+        self.assertTrue(success)
+
+        self.quest1.xp_can_be_entered_by_students = True
+        self.quest1.save()
+
+        self.sub1.xp_requested = 50
+        self.sub1.save()
+
+        # Return submission
+        self.sub1.mark_returned()
+
+        response = self.client.get(self.sub1.get_absolute_url())
+
+        self.assertEqual(response.context['form']['xp_requested'].value(), self.sub1.xp_requested)
 
     def test_ajax_save_draft_has_changes(self):
         """Should save if there are changes in the draft text"""
@@ -439,9 +567,11 @@ class SubmissionCompleteViewTest(ViewTestUtilsMixin, TenantTestCase):
             )
         return response
 
-    def test_complete(self):
+    def test_complete_quick_reply_form(self):
         """ Students can complete quests that are available to them.  Form is submitted with the 'complete' button
-        Are redirected to their available quests page, submission is marked completed and has a completion time
+        Are redirected to their available quests page, submission is marked completed and has a completion time.
+        Tests for file-less submissions are labeled under the quick reply form because of the form selection
+        logic in the view being tested, but are still possible from the standard submission form.
         """
         comment = "test submission comment"
         response = self.post_complete(submission_comment=comment)
@@ -456,7 +586,7 @@ class SubmissionCompleteViewTest(ViewTestUtilsMixin, TenantTestCase):
         self.assertEqual(comments.count(), 1)
         self.assertEqual(comments[0].text, comment)
 
-    def test_no_comment_verification_not_required(self):
+    def test_no_comment_verification_not_required_quick_reply_form(self):
         """ When a quest is automatically approved, it does not require a comment
         """
         self.sub.quest.verification_required = False
@@ -469,7 +599,7 @@ class SubmissionCompleteViewTest(ViewTestUtilsMixin, TenantTestCase):
 
         self.assertSuccessMessage(response)
 
-    def test_no_comment_but_verification_required(self):
+    def test_no_comment_but_verification_required_quick_reply_form(self):
         """ When a quest requires teacher's approval, it means they must include either files or a comment
         """
         self.sub.quest.verification_required = True
@@ -494,7 +624,6 @@ class SubmissionCompleteViewTest(ViewTestUtilsMixin, TenantTestCase):
         # response = self.post_complete(comment="")
         # # Should redirect back to the submission with error message
         # self.assertEqual(response.status_code, 404)
-        pass
 
     def test_notifications_own_student(self):
         """ Teacher should NOT be notified when their student complete's a quest, because it
@@ -726,7 +855,6 @@ class SubmissionCompleteViewTest(ViewTestUtilsMixin, TenantTestCase):
         #     )
         # # bad form, just rerender
         # self.assertEqual(response.status_code, 200)
-        pass
 
 
 class QuestCRUDViewsTest(ViewTestUtilsMixin, TenantTestCase):
@@ -934,6 +1062,161 @@ class QuestCRUDViewsTest(ViewTestUtilsMixin, TenantTestCase):
         self.assertIn("new-prereq-quest2", str(quest_to_update.prereqs()))
 
 
+# Can't test any forms with this DAL widget because content_types isn't available yet.
+class QuestPrereqsUpdate(ViewTestUtilsMixin, TenantTestCase):
+    """ These tests are mostly of the prerequisites app's ObjectPrereqsFormView and PrereqFormInline,
+    However, the QuestPrereqsUpdate view is where those are both used.
+
+    url(r'^(?P<pk>[0-9]+)/prereqs/edit/$', views.QuestPrereqsUpdate.as_view(), name='quest_prereqs_update'),
+    """
+    form_prefix = "prerequisites-prereq-parent_content_type-parent_object_id"
+
+    def setUp(self):
+        """ Tests start with a parent_quest that has a single simple prereq --> prereq_quest"""
+        self.client = TenantClient(self.tenant)
+        self.test_student = User.objects.create_user('test_student', password="password")
+        self.test_teacher = User.objects.create_user('test_teacher', password="password", is_staff=True)
+        self.parent_quest = baker.make(Quest, name="Test Parent Quest")
+        self.prereq_quest = baker.make(Quest, name="Test Prereq Quest")
+        self.parent_quest.add_simple_prereqs([self.prereq_quest])
+
+    def build_formset_form_data(self, form_prefix, form_number, **data):
+        """ https://stackoverflow.com/a/62744916/2700631
+        """
+        form = {}
+        for key, value in data.items():
+            form_key = f"{form_prefix}-{form_number}-{key}"
+            form[form_key] = value
+        return form
+
+    def build_formset_data(self, forms, form_prefix="form", **common_data):
+        formset_dict = {
+            f"{form_prefix}-TOTAL_FORMS": f"{len(forms)}",
+            f"{form_prefix}-MAX_NUM_FORMS": "1000",
+            f"{form_prefix}-INITIAL_FORMS": "1"
+        }
+        formset_dict.update(common_data)
+        for i, form_data in enumerate(forms):
+            form_dict = self.build_formset_form_data(form_prefix, form_number=i, **form_data)
+            formset_dict.update(form_dict)
+        return formset_dict
+
+    def test_post_cancel_button(self):
+        """ Cancel button should redirect to the quest detail view """
+        self.client.force_login(self.test_teacher)
+        response = self.client.post(
+            reverse('quests:quest_prereqs_update', kwargs={'pk': self.parent_quest.pk}),
+            data={
+                'object': self.parent_quest,
+                'cancel': True
+            }
+        )
+        self.assertRedirects(response, self.parent_quest.get_absolute_url())
+
+    def test_post_save_button__defaults(self):
+        """ Save button should redirect to the quest detail view, no changes to form data"""
+        self.client.force_login(self.test_teacher)
+
+        ct = ContentType.objects.get_for_model(self.prereq_quest)
+
+        forms_data = [
+            {
+                "prereq_object": f"{ct.id}-{self.prereq_quest.id}",
+                "prereq_count": '1',
+                # "or_prereq_object": None,
+                "or_prereq_count": '1',
+                "id": f'{self.parent_quest.pk}'
+            },
+        ]
+
+        formset_data = self.build_formset_data(forms_data, QuestPrereqsUpdate.form_prefix)
+        response = self.client.post(
+            reverse('quests:quest_prereqs_update', kwargs={'pk': self.parent_quest.pk}),
+            data=formset_data
+        )
+
+        # If successfully submitted, the form should validate and then redirect to the quest's detail page
+        # If get 200 then means probably a form is invalid.
+        self.assertRedirects(response, self.parent_quest.get_absolute_url())
+
+    def test_post_save_button__delete(self):
+        """ Flag the prereq for deletion by setting the DELETE field to true"""
+        self.client.force_login(self.test_teacher)
+
+        ct = ContentType.objects.get_for_model(self.prereq_quest)
+
+        forms_data = [
+            {
+                "prereq_object": f"{ct.id}-{self.prereq_quest.id}",
+                "prereq_count": '1',
+                # "or_prereq_object": None,
+                "or_prereq_count": '1',
+                "id": f'{self.parent_quest.pk}',
+                "DELETE": 'on',
+            },
+        ]
+
+        formset_data = self.build_formset_data(forms_data, QuestPrereqsUpdate.form_prefix)
+        response = self.client.post(
+            reverse('quests:quest_prereqs_update', kwargs={'pk': self.parent_quest.pk}),
+            data=formset_data
+        )
+
+        # If successfully submitted, the form should validate and then redirect to the quest's detail page
+        # If get 200 then means probably a form is invalid.
+        self.assertRedirects(response, self.parent_quest.get_absolute_url())
+
+        # TODO should no longer have the prereq.. but this doesn't work for some reason....
+        # self.assertEqual(self.parent_quest.prereqs().count(), 0)
+
+    def test_post_save_button__new_values(self):
+        """ New prereq data in form should change the prereqs for the parent quest."""
+        self.client.force_login(self.test_teacher)
+        new_quest = baker.make(Quest, name="New Quest")
+        new_quest_2 = baker.make(Quest, name="New Quest 2")
+        ct = ContentType.objects.get_for_model(Quest)
+
+        forms_data = [
+            {
+                "prereq_object": f"{ct.id}-{new_quest.id}",
+                "prereq_count": '3',
+                # "or_prereq_object": None,
+                "or_prereq_count": '1',
+                "id": f'{self.parent_quest.pk}'
+            },
+            {
+                "prereq_object": f"{ct.id}-{new_quest_2.id}",
+                "prereq_count": '1',
+                # "or_prereq_object": None,
+                "or_prereq_count": '1',
+                "id": f'{self.parent_quest.pk}'
+            },
+        ]
+
+        formset_data = self.build_formset_data(forms_data, QuestPrereqsUpdate.form_prefix)
+        response = self.client.post(
+            reverse('quests:quest_prereqs_update', kwargs={'pk': self.parent_quest.pk}),
+            data=formset_data
+        )
+
+        # If successfully submitted, the form should validate and then redirect to the quest's detail page
+        # If get 200 then means probably a form is invalid.
+        self.assertRedirects(response, self.parent_quest.get_absolute_url())
+
+        # Check that the prereqs were updated
+        self.parent_quest.refresh_from_db()
+        prereqs = self.parent_quest.prereqs()
+        self.assertEqual(prereqs.count(), 2)
+
+        # TODO For some reason the original prereq is not getting replaced by the first form in the formset.
+        # print(prereqs)
+        # self.assertEqual(prereqs[0].prereq_object, new_quest)
+        # self.assertEqual(prereqs[1].prereq_object, new_quest_2)
+
+        # TODO doesn't work.  Only one new prereq was added, the second one.  The first didn't change from original value.... WHY?!
+        # self.assertEqual(Prereq.objects.count(), old_num_prereqs + 2)
+
+
 class QuestCopyViewTest(ViewTestUtilsMixin, TenantTestCase):
     """ Tests for:
 
@@ -948,27 +1231,28 @@ class QuestCopyViewTest(ViewTestUtilsMixin, TenantTestCase):
         self.client = TenantClient(self.tenant)
         self.test_student = User.objects.create_user('test_student', password="password")
         self.test_teacher = User.objects.create_user('test_teacher', password="password", is_staff=True)
+
         self.quest = baker.make(Quest, name="Test Quest")
+        self.quest.tags.add('tag')
 
         # simulate a logged in TA (teaching assistant = a student with extra permissions)
         self.test_ta = User.objects.create_user('test_ta')
         self.test_ta.profile.is_TA = True  # profiles are create automatically via User post_save signal
         self.test_ta.profile.save()
 
-        self.valid_copy_form_data = {
-            'name': "Test Quest - COPY",  # only blank required field
-            # these fields are required but they have defaults
-            'xp': 0,
-            'max_repeats': 0,
-            'max_xp': -1,
-            'hours_between_repeats': 0,
-            'sort_order': 0,
-            'date_available': "2006-10-25",
-            'time_available': "14:30:59",
+        self.valid_copy_form_data = generate_form_data(model=Quest)
+        self.valid_copy_form_data.update({
+            # for testing
+            'name': 'Test Quest - COPY',
+            'tags': [1],
             'new_quest_prerequisite': self.quest.id,
-        }
+
+            # validation error
+            'date_available': '2006-10-25',
+        })
 
     def test_teacher_copy_quest_GET(self):
+        """ initial values in form GET is the same as the self.quest (quest that is being copied)  """
         self.client.force_login(self.test_teacher)
 
         get_response = self.client.get(reverse('quests:quest_copy', args=[self.quest.id]))
@@ -979,10 +1263,13 @@ class QuestCopyViewTest(ViewTestUtilsMixin, TenantTestCase):
 
         # Quest name should have changed
         self.assertEqual(form_data['name'], 'Test Quest - COPY')
+        # Tags should be the same as original
+        self.assertEqual(list(form_data['tags'].values_list('name', flat=True)), ['tag'])
         # And by default form should have prereq set
         self.assertEqual(form_data['new_quest_prerequisite'], self.quest)
 
     def test_teacher_copy_quest_POST(self):
+        """ values after being saved is the same as copied quest + '- COPY' being appended to name """
         self.client.force_login(self.test_teacher)
 
         response = self.client.post(
@@ -1000,6 +1287,9 @@ class QuestCopyViewTest(ViewTestUtilsMixin, TenantTestCase):
         self.assertEqual(new_quest.prereqs().count(), 1)
         self.assertEqual(new_quest.prereqs().first().prereq_object, self.quest)
 
+        # Copied quest should have tag
+        self.assertEqual(new_quest.tags.count(), 1)
+
     def test_TA_can_copy_quest_GET(self):
 
         self.client.force_login(self.test_ta)
@@ -1011,6 +1301,8 @@ class QuestCopyViewTest(ViewTestUtilsMixin, TenantTestCase):
 
         # Quest name should have changed
         self.assertEqual(form_data['name'], 'Test Quest - COPY')
+        # Tags should be the same as original
+        self.assertEqual(list(form_data['tags'].values_list('name', flat=True)), ['tag'])
         # And by default form should have prereq set
         self.assertEqual(form_data['new_quest_prerequisite'], self.quest)
         # self.assertFalse(form_data['visible_to_students']) ? When is this changed?
@@ -1041,6 +1333,9 @@ class QuestCopyViewTest(ViewTestUtilsMixin, TenantTestCase):
         # Copied quests should set the original as a pre-requisite
         self.assertEqual(new_quest.prereqs().count(), 1)
         self.assertEqual(new_quest.prereqs().first().prereq_object, self.quest)
+
+        # Copied quest should have tag
+        self.assertEqual(new_quest.tags.count(), 1)
 
     def test_copy_with_new_prereqs(self):
         """ When copying a quest should be able to set new prereqs """
@@ -1161,6 +1456,29 @@ class QuestListViewTest(ViewTestUtilsMixin, TenantTestCase):
         # and no button when already viewing hidden quests
         self.assertNotContains(response, 'Show Hidden Quests')
 
+    def test_available_quest_list_ordering(self):
+        """Parses for queryset used as context for "Available Quests" list and asserts equal to a
+        manually ordered queryset.
+        """
+
+        # log in as teacher and access available quests view
+        self.client.force_login(self.test_teacher)
+        staff_response = self.client.get(reverse('quests:available'))
+
+        # log in as student and access available quests view
+        self.client.force_login(self.test_student)
+        student_response = self.client.get(reverse('quests:available'))
+
+        # get queryset from view context and order it as intended
+        for response in [staff_response, student_response]:
+            displayed_order = response.context['available_quests']
+
+            # proper quest ordering is pulled directly from the parent model XPItem's "ordering" meta value
+            intended_order = displayed_order.order_by(*XPItem._meta.ordering)
+
+            # assert ordered view is unchanged from displayed view
+            self.assertQuerysetEqual(displayed_order, intended_order)
+
 
 class CategoryViewTests(ViewTestUtilsMixin, TenantTestCase):
 
@@ -1177,22 +1495,26 @@ class CategoryViewTests(ViewTestUtilsMixin, TenantTestCase):
         # self.category = baker.make('quests_manager.category', name="testcat")
 
     def test_all_page_status_codes_for_anonymous(self):
-        ''' If not logged in then all views should redirect to home page or admin login '''
+        ''' If not logged in then all views should redirect to home page '''
 
-        self.assertRedirectsAdmin('quests:categories')
-        self.assertRedirectsAdmin('quests:category_create')
-        self.assertRedirectsAdmin('quests:category_update', args=[1])
-        self.assertRedirectsAdmin('quests:category_delete', args=[1])
+        self.assertRedirectsLogin('quests:categories')
+        self.assertRedirectsLogin('quests:category_detail', kwargs={"pk": 1})
+        self.assertRedirectsLogin('quests:category_create')
+        self.assertRedirectsLogin('quests:category_update', args=[1])
+        self.assertRedirectsLogin('quests:category_delete', args=[1])
 
     def test_all_page_status_codes_for_students(self):
-        ''' If not logged in then all views should redirect to home page or admin login '''
+        ''' If not logged in then all views should redirect to 403'''
         self.client.force_login(self.test_student1)
 
         # Staff access only
-        self.assertRedirectsAdmin('quests:categories')
-        self.assertRedirectsAdmin('quests:category_create')
-        self.assertRedirectsAdmin('quests:category_update', args=[1])
-        self.assertRedirectsAdmin('quests:category_delete', args=[1])
+        self.assert403('quests:categories')
+        self.assert403('quests:category_create')
+        self.assert403('quests:category_update', args=[1])
+        self.assert403('quests:category_delete', args=[1])
+
+        # Student access
+        self.assert200('quests:category_detail', kwargs={"pk": 1})
 
     def test_all_page_status_codes_for_staff(self):
         ''' If not logged in then all views should redirect to home page or admin login '''
@@ -1206,6 +1528,38 @@ class CategoryViewTests(ViewTestUtilsMixin, TenantTestCase):
         self.client.force_login(self.test_teacher)
         response = self.client.get(reverse('quests:categories'))
         self.assertEqual(response.status_code, 200)
+
+    def test_CategoryDetail_view(self):
+        """ Admin and students should be able to view course details
+
+        Students accessing the category detail view should only see active quests
+        Admin should see every quest assigned to the campaign
+        """
+
+        # campaign with visible and non-visible quest created to test visibility for Admin and Student
+        view_test_campaign = baker.make(Category)
+        baker.make(Quest, visible_to_students=True, campaign=view_test_campaign)
+        baker.make(Quest, visible_to_students=False, campaign=view_test_campaign)
+
+        # Admin should be able to access view
+        self.client.force_login(self.test_teacher)
+        response = self.client.get(reverse('quests:category_detail', kwargs={"pk": view_test_campaign.pk}))
+        self.assertEqual(response.status_code, 200)
+
+        # Admin should be able to see every quest assigned to the viewed campaign
+        displayed_quests = response.context["category_displayed_quests"]
+        intended_quests = Quest.objects.filter(campaign=view_test_campaign)
+        self.assertQuerysetEqual(displayed_quests, intended_quests, ordered=False)
+
+        # Students should be able to access view
+        self.client.force_login(self.test_student1)
+        response = self.client.get(reverse('quests:category_detail', kwargs={"pk": view_test_campaign.pk}))
+        self.assertEqual(response.status_code, 200)
+
+        # Students should only be able to see active quests assigned to the viewed campaign
+        displayed_quests = response.context["category_displayed_quests"]
+        intended_quests = Quest.objects.get_active().filter(campaign=view_test_campaign)
+        self.assertQuerysetEqual(displayed_quests, intended_quests, ordered=False)
 
     def test_CategoryCreate_view(self):
 
@@ -1479,6 +1833,16 @@ class DetailViewTest(ViewTestUtilsMixin, TenantTestCase):
             response = self.client.get(reverse('quests:quest_detail', args=[self.quest.id]))
 
         self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.context['available'])
+
+    def test_quest_preview_is_available_to_student_without_course(self):
+        self.client.force_login(self.test_student)
+
+        quest_avail_outside_course = baker.make(Quest, available_outside_course=True)
+
+        with patch('profile_manager.models.Profile.has_current_course', return_value=False):
+            response = self.client.get(quest_avail_outside_course.get_absolute_url())
+
         self.assertTrue(response.context['available'])
 
     def test_quest_is_editable(self):
@@ -1931,7 +2295,6 @@ class ApprovalsViewTest(ViewTestUtilsMixin, TenantTestCase):
 
     def test_approved_for_quest_all(self):
         """ Approved submissions of only this specific quest, regardless of teacher """
-        pass
 
     def test_approvals_all_buttons_does_not_exist(self):
         """ My blocks should not be rendered when there is only one teacher"""
@@ -1942,12 +2305,134 @@ class ApprovalsViewTest(ViewTestUtilsMixin, TenantTestCase):
     def test_approval_all_button_exists(self):
         """ My blocks button should not be rendered """
 
-        baker.make('courses.Block', block='A', current_teacher=self.current_teacher)
-        baker.make('courses.Block', block='B', current_teacher=self.current_teacher)
+        baker.make('courses.Block', name='A', current_teacher=self.current_teacher)
+        baker.make('courses.Block', name='B', current_teacher=self.current_teacher)
 
         another_teacher = baker.make(User, is_staff=True)
-        baker.make('courses.Block', block='C', current_teacher=another_teacher)
-        baker.make('courses.Block', block='D', current_teacher=another_teacher)
+        baker.make('courses.Block', name='C', current_teacher=another_teacher)
+        baker.make('courses.Block', name='D', current_teacher=another_teacher)
 
         response = self.client.get(reverse('quests:approvals'))
         self.assertContains(response, 'My blocks')
+
+
+class Is_staff_or_TA_test(TenantTestCase):
+    """ Test is_staff_or_TA() test_func function """
+
+    def setUp(self):
+        self.user = baker.make(User)
+
+    def test_is_staff_or_TA___staff(self):
+        """ User is staff, return True """
+        from quest_manager.views import is_staff_or_TA
+
+        self.user.is_staff = True
+        self.assertTrue(is_staff_or_TA(self.user))
+
+    def test_is_staff_or_TA___TA(self):
+        """ User is TA returns True"""
+        from quest_manager.views import is_staff_or_TA
+
+        self.user.profile.is_TA = True
+        self.assertTrue(is_staff_or_TA(self.user))
+
+    def test_is_staff_or_TA___neither(self):
+        """ User is not staff or TA, returns False """
+        from quest_manager.views import is_staff_or_TA
+
+        self.assertFalse(is_staff_or_TA(self.user))
+
+    def test_is_staff_or_TA__anonymous(self):
+        """ Anonymous user returns False"""
+        from quest_manager.views import is_staff_or_TA
+
+        self.assertFalse(is_staff_or_TA(AnonymousUser()))
+
+
+class CommonDataViewTest(ViewTestUtilsMixin, TenantTestCase):
+
+    def setUp(self):
+        self.client = TenantClient(self.tenant)
+        self.teacher = baker.make(User, is_staff=True)
+
+        self.cqi = baker.make(CommonData)
+
+    def test_page_status_code__anonymous(self):
+        self.assertRedirectsLogin("quest_manager:commonquestinfo_list")
+        self.assertRedirectsLogin("quest_manager:commonquestinfo_create")
+        self.assertRedirectsLogin("quest_manager:commonquestinfo_update", args=[self.cqi.pk])
+        self.assertRedirectsLogin("quest_manager:commonquestinfo_delete", args=[self.cqi.pk])
+
+    def test_page_status_code__student(self):
+        stu = baker.make(User)
+        self.client.force_login(stu)
+
+        self.assert403("quest_manager:commonquestinfo_list")
+        self.assert403("quest_manager:commonquestinfo_create")
+        self.assert403("quest_manager:commonquestinfo_update", args=[self.cqi.pk])
+        self.assert403("quest_manager:commonquestinfo_delete", args=[self.cqi.pk])
+
+    def test_page_status_code__teacher(self):
+        self.client.force_login(self.teacher)
+
+        self.assert200("quest_manager:commonquestinfo_list")
+        self.assert200("quest_manager:commonquestinfo_create")
+        self.assert200("quest_manager:commonquestinfo_update", args=[self.cqi.pk])
+        self.assert200("quest_manager:commonquestinfo_delete", args=[self.cqi.pk])
+
+    def test_CommonDataList_view(self):
+        """
+            Test if CommonData displays all CQI obj
+        """
+        baker.make(CommonData, _quantity=5)
+        self.client.force_login(self.teacher)
+
+        response = self.client.get(reverse("quest_manager:commonquestinfo_list"))
+        object_list = response.context["object_list"]
+
+        self.assertEqual(CommonData.objects.count(), len(object_list))
+
+        for model_obj, ctx_obj in zip(CommonData.objects.all(), object_list):
+            self.assertEqual(model_obj.pk, ctx_obj.pk)
+
+    def test_CommonDataCreate_view(self):
+        """
+            Test if CQI can be created using CreateView via form_data
+        """
+        self.client.force_login(self.teacher)
+
+        response = self.client.post(reverse("quest_manager:commonquestinfo_create"), data=generate_form_data(CommonData))
+        self.assertEqual(response.status_code, 302)
+
+        self.assertEqual(CommonData.objects.count(), 2)
+
+    def test_CommonDataUpdate_view(self):
+        """
+            Test if CQI can be updated using UpdateView via form_data
+        """
+        self.client.force_login(self.teacher)
+        old = baker.make(CommonData, title="old title")
+
+        response = self.client.post(
+            reverse("quest_manager:commonquestinfo_update", args=[old.pk]),
+            data=generate_form_data(CommonData, title="new title", instructions=old.instructions)
+        )
+        self.assertEqual(response.status_code, 302)
+
+        new = CommonData.objects.filter(pk=old.pk).first()
+        self.assertTrue(new)
+        self.assertNotEqual(new.title, old.title)
+        self.assertEqual(new.instructions, old.instructions)
+
+    def test_CommonDataDelete_view(self):
+        """
+            Test if CQI can be deleted using DeleteView
+        """
+        obj = baker.make(CommonData)
+        self.assertNotEqual(CommonData.objects.count(), 1)
+        self.client.force_login(self.teacher)
+
+        response = self.client.post(reverse("quest_manager:commonquestinfo_delete", args=[obj.pk]))
+        self.assertEqual(response.status_code, 302)
+
+        self.assertEqual(CommonData.objects.count(), 1)

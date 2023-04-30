@@ -78,16 +78,31 @@ class HasPrereqsMixin:
         else:
             return False
 
+    def prereq_parent_str(self):
+        """
+        a string representation of the for this object in the form of:
+        (content_type/model) ObjectName
+        """
+        content_type = ContentType.objects.get_for_model(self).name
+        return f"({content_type}) {str(self)}"
+
 
 class IsAPrereqMixin:
     """
     For models that act as a prerequisite.
     Classes using this mixin need to implement
     the method: condition_met_as_prerequisite(user, num_required)
-    and have a field "name", or override the autocomplete_search_fields() class method
+    and have a field "name", or override the autocomplete_search_fields() and dal_autocomplete_search_fields class methods
+
+    Steps to add a new prerequisite model:
+
+    1. add IsAPrereqMixin to the class (this will automatically regsiter the model as a prerequisite)
+    2. if the model does not have a name field, then override the autocomplete_search_fields()  and dal_autocomplete_search_fields methods
+     (see implementation below)
+    3. implement the `condition_met_as_prerequisite(user, num_required)` method to the model class
+
     """
 
-    # TODO: Can I force implementing models to define this method?
     def condition_met_as_prerequisite(self, user, num_required):
         """
         Defines what it means for the user to meet this prerequisite.  For this Mixin to be any use, the implementing
@@ -97,7 +112,7 @@ class IsAPrereqMixin:
         :return: True if the user meets the requirements for this object as a prerequisite, otherwise False.
 
         """
-        raise NotImplementedError
+        raise NotImplementedError(f"{self.__class__.__name__} model must implement a condition_met_as_prerequisite() method")
 
     def is_used_prereq(self):
         """
@@ -111,7 +126,7 @@ class IsAPrereqMixin:
         """
         return Prereq.objects.all_reliant_on(self, exclude_NOT=exclude_NOT)
 
-    def get_reliant_objects(self, active_only=True, exclude_NOT=False):
+    def get_reliant_objects(self, active_only=True, exclude_NOT=False, sort=False):
         """
         :return: a list containing the objects that require this as a prereq
         """
@@ -127,14 +142,57 @@ class IsAPrereqMixin:
                         reliant_objects.append(parent_obj)
                 else:
                     reliant_objects.append(parent_obj)
+        if sort:
+            reliant_objects = sorted(reliant_objects, key=str)
         return reliant_objects
 
-    # to help with the prerequisite choices:
-    # https://django-grappelli.readthedocs.io/en/latest/customization.html#autocomplete-lookups
-    # override this static method in the class to choose different search fields
     @staticmethod
     def autocomplete_search_fields():
+        """
+        To help with the prerequisite choices:
+        https://django-grappelli.readthedocs.io/en/latest/customization.html#autocomplete-lookups
+        override this static method in the class to choose different search fields
+        """
         return ("name__icontains",)
+
+    @staticmethod
+    def all_registered_content_types():
+        """Returns a queryset of ContentType objects for all models inheriting IsAPrereqMixin"""
+        registered_list = [
+            ct.pk for ct in ContentType.objects.all()
+            if IsAPrereqMixin.content_type_is_registered(ct)
+        ]
+        return ContentType.objects.filter(pk__in=registered_list)
+
+    @staticmethod
+    def all_registered_model_classes():
+        """Returns a list of all models inheriting IsAPrereqMixin"""
+        registered_list = [
+            ct.model_class() for ct in IsAPrereqMixin.all_registered_content_types()
+        ]
+        return registered_list
+
+    @staticmethod
+    def content_type_is_registered(content_type):
+        """Check if model represented by this content_type implements IsAPrereqMixin"""
+        return IsAPrereqMixin.model_is_registered(content_type.model_class())
+
+    @staticmethod
+    def model_is_registered(model_class):
+        """Check if class implements IsAPrereqMixin"""
+        if model_class and issubclass(model_class, IsAPrereqMixin):
+            return True
+        else:
+            return False
+
+    @staticmethod
+    def gfk_search_fields():
+        """
+        For GFKSelect2Widget, should return a field on the model.
+
+        Override this static method in the class to choose different search fields
+        """
+        return ["name__icontains"]
 
 
 # class PrereqQuerySet(models.query.QuerySet):
@@ -295,32 +353,52 @@ class Prereq(IsAPrereqMixin, models.Model):
     or_prereq: An optional alternate object who's condition can me met instead of prereq: prereq OR or_prereq
     """
 
-    name = models.CharField(max_length=256, null=True, blank=True,
-                            help_text="Providing a name to a prereq allows it to be used itself as a prerequisite. "
-                                      "One use for this to to chain more than two OR conditions.")
+    name = models.CharField(
+        max_length=256, null=True, blank=True,
+        help_text="Providing a name to a prereq allows it to be used itself as a prerequisite. "
+        "One use for this to to chain more than two OR conditions."
+    )
 
     parent_content_type = models.ForeignKey(ContentType, related_name='prereq_parent', on_delete=models.CASCADE)
     parent_object_id = models.PositiveIntegerField()
     parent_object = GenericForeignKey("parent_content_type", "parent_object_id")
 
+    def limit_prereq_choices():
+        registered_pk_list = IsAPrereqMixin.all_registered_content_types().values_list('pk', flat=True)
+        return {'pk__in': registered_pk_list}
+
     # the required prerequisite object and options
-    prereq_content_type = models.ForeignKey(ContentType, related_name='prereq_item',
-                                            verbose_name="Type of Prerequisite",
-                                            on_delete=models.CASCADE)
+    prereq_content_type = models.ForeignKey(
+        ContentType, related_name='prereq_item',
+        verbose_name="Type of Prerequisite",
+        on_delete=models.CASCADE,
+        limit_choices_to=limit_prereq_choices
+    )
     prereq_object_id = models.PositiveIntegerField(verbose_name="Prerequisite")
     prereq_object = GenericForeignKey("prereq_content_type", "prereq_object_id")
-    prereq_count = models.PositiveIntegerField(default=1)
-    prereq_invert = models.BooleanField(default=False, verbose_name="NOT")
+    prereq_count = models.PositiveIntegerField(
+        default=1,
+        help_text="The number of times the 'prereq object' must be met before this prerequisite is considered complete. "
+        "This value will only be meaningful for certain kinds of prereq objects such as repeatable quests, or badges."
+    )
+    prereq_invert = models.BooleanField(
+        default=False, verbose_name="NOT",
+        help_text="This prerequisite is considered complete if they do NOT meet the criteria."
+    )
 
     # an optional alternate prerequisite object and options
-    or_prereq_content_type = models.ForeignKey(ContentType, related_name='or_prereq_item',
-                                               verbose_name="OR Type of Prerequisite", blank=True, null=True,
-                                               on_delete=models.SET_NULL)
+    or_prereq_content_type = models.ForeignKey(
+        ContentType, related_name='or_prereq_item',
+        verbose_name="OR Type of Prerequisite",
+        blank=True, null=True,
+        on_delete=models.SET_NULL,
+        limit_choices_to=limit_prereq_choices
+    )
     or_prereq_object_id = models.PositiveIntegerField(blank=True, null=True,
                                                       verbose_name="OR Prerequisite")
     or_prereq_object = GenericForeignKey("or_prereq_content_type", "or_prereq_object_id")
-    or_prereq_count = models.PositiveIntegerField(default=1)
-    or_prereq_invert = models.BooleanField(default=False, verbose_name='OR NOT')
+    or_prereq_count = models.PositiveIntegerField(default=1, verbose_name="Alternate prereq object count")
+    or_prereq_invert = models.BooleanField(default=False, verbose_name='NOT alternate prereq object')
 
     objects = PrereqManager()
 
@@ -333,7 +411,7 @@ class Prereq(IsAPrereqMixin, models.Model):
         s = ""
         if self.prereq_invert:
             s += "NOT "
-        s += "(" + str(self.prereq_content_type) + ") "
+        s += "(" + self.prereq_content_type.name + ") "
         s += str(self.get_prereq())
         if self.prereq_count > 1:
             s += " x" + str(self.prereq_count)
@@ -341,15 +419,11 @@ class Prereq(IsAPrereqMixin, models.Model):
             s += " OR "
             if self.or_prereq_invert:
                 s += "NOT "
-            s += "(" + str(self.or_prereq_content_type) + ") "
+            s += "(" + self.or_prereq_content_type.name + ") "
             s += str(self.get_or_prereq())
             if self.or_prereq_count > 1:
                 s += " x" + str(self.or_prereq_count)
         return s
-
-    # @staticmethod
-    # def autocomplete_search_fields():
-    #     return ("name__icontains",)
 
     def parent(self):
         """:return the parent as its object"""
@@ -457,25 +531,6 @@ class Prereq(IsAPrereqMixin, models.Model):
         new_prereq.save()
         return new_prereq
 
-    @classmethod
-    def all_registered_content_types(cls):
-        registered_list = [
-            ct.pk for ct in ContentType.objects.all()
-            if cls.model_is_registered(ct)
-        ]
-        return ContentType.objects.filter(pk__in=registered_list)
-
-    @staticmethod
-    def model_is_registered(content_type):
-        """Check if class implements IsAPrereqMixin"""
-        mc = content_type.model_class()
-
-        # handle old content types that may not have been removed? mc = None
-        if mc and issubclass(mc, IsAPrereqMixin):
-            return True
-        else:
-            return False
-
 
 class PrereqAllConditionsMet(models.Model):
     """This is a cache of the Prereq.objects.all_conditions_met(obj, user) method which is super innefficient and clunky
@@ -506,6 +561,8 @@ class PrereqAllConditionsMet(models.Model):
             return json.loads(self.ids)
         return PrereqAllConditionsMet.ids.default
 
-    def set_ids(self, id_list=[]):
+    def set_ids(self, id_list=None):
+        if id_list is None:
+            id_list = []
         self.ids = str(id_list)
         self.save()

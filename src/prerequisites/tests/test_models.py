@@ -1,10 +1,12 @@
 # from mock import patch
 
+from django.utils.six import text_type
 from django.contrib.auth import get_user_model
 from django.contrib.contenttypes.models import ContentType
+from django.db import models
 
+from django_tenants.test.cases import TenantTestCase
 from model_bakery import baker
-from tenant_schemas.test.cases import TenantTestCase
 
 from prerequisites.models import IsAPrereqMixin, Prereq, PrereqAllConditionsMet
 
@@ -126,12 +128,12 @@ class IsAPrereqMixinTest(TenantTestCase):
 
     def test_get_reliant_qs(self):
         reliant = self.quest_prereq.get_reliant_qs()
+
         self.assertListEqual(list(reliant), list(Prereq.objects.all_reliant_on(self.quest_prereq)))
 
     def test_get_reliant_objects(self):
         reliant_objects = self.quest_prereq.get_reliant_objects()
         self.assertListEqual(list(reliant_objects), [self.quest_parent])
-
         # try adding another, this time as an OR
         Prereq.objects.create(
             parent_object=self.quest_prereq2,
@@ -142,7 +144,7 @@ class IsAPrereqMixinTest(TenantTestCase):
         reliant_objects = self.quest_prereq.get_reliant_objects()
         self.assertListEqual(list(reliant_objects), [self.quest_parent, self.quest_prereq2])
 
-    def test_get_reliant_objects_exclude_NOT(self):
+    def test_get_reliant_objects__exclude_NOT(self):
         reliant_objects = self.quest_prereq.get_reliant_objects(exclude_NOT=True)
         self.assertListEqual(list(reliant_objects), [self.quest_parent])
 
@@ -159,6 +161,67 @@ class IsAPrereqMixinTest(TenantTestCase):
 
         reliant_objects = self.quest_prereq.get_reliant_objects(exclude_NOT=False)
         self.assertEqual(len(reliant_objects), 1)
+
+    def test_get_reliant_objects__sort(self):
+        """ Test that get_reliant_objects(sort=True) returns a list where the objects are sorted alphabetically by str() """
+
+        # Setup creates self.quest_prereq relying on self.quest_parent.
+        # Add some more reliant quests to be sorted.
+        quest_A = baker.make('quest_manager.Quest', name="A")
+        quest_z = baker.make('quest_manager.Quest', name="z")
+        quest_Z = baker.make('quest_manager.Quest', name="Z")
+        Prereq.objects.create(parent_object=quest_Z, prereq_object=self.quest_prereq)
+        Prereq.objects.create(parent_object=quest_z, prereq_object=self.quest_prereq)
+        Prereq.objects.create(parent_object=quest_A, prereq_object=self.quest_prereq)
+
+        # throw in a Badge
+        badge_B = baker.make('badges.Badge', name="B")
+        badge_1 = baker.make('badges.Badge', name="1")
+        Prereq.objects.create(parent_object=badge_B, prereq_object=self.quest_prereq)
+        Prereq.objects.create(parent_object=badge_1, prereq_object=self.quest_prereq)
+
+        reliant_objects = self.quest_prereq.get_reliant_objects(exclude_NOT=True, sort=True)
+        # Note lowercase comes after uppercase in the defaults alphanumeric sort
+        self.assertListEqual(reliant_objects, [badge_1, quest_A, badge_B, quest_Z, self.quest_parent, quest_z])
+
+    def test_condition_met_as_prerequisite__is_implemented(self):
+        """ All models that inherit from this mixin should implement the condition_met_as_prerequisite() method """
+        for ct in IsAPrereqMixin.all_registered_content_types():
+            # If the method is not implemented, then NotImplementedError is thrown
+            instance = baker.make(ct.model_class())
+            instance.condition_met_as_prerequisite(user=baker.make(User), num_required=1)
+
+    def test_gfk_search_fields__is_implemented(self):
+        """ All models implementing this Mixin, also implement this method if the default doesn't suffice """
+        prereq_models = IsAPrereqMixin.all_registered_model_classes()
+        for model in prereq_models:
+            assert all(isinstance(x, text_type) for x in model.gfk_search_fields())
+
+    def test_static_content_type_is_registered(self):
+        """A content_type representing a model that implements the IsAPrereqMixin returns True
+        """
+        ct = ContentType.objects.get(app_label='quest_manager', model='quest')
+        self.assertTrue(IsAPrereqMixin.content_type_is_registered(ct))
+
+        ct = ContentType.objects.get(app_label='auth', model='user')
+        self.assertFalse(IsAPrereqMixin.content_type_is_registered(ct))
+
+    def test_static_all_registered_content_types(self):
+        """There are 6 models that implement the IsAPrereqMixin
+        """
+        cts = IsAPrereqMixin.all_registered_content_types()
+        self.assertEqual(cts.count(), 8)
+
+    def test_static_model_is_registered(self):
+        """Any model class that implements IsAPrereqMixin returns True"""
+        class TestClassRegistered(IsAPrereqMixin, models.Model):
+            pass
+
+        class TestClassNotRegsistered(models.Model):
+            pass
+
+        self.assertTrue(IsAPrereqMixin.model_is_registered(TestClassRegistered))
+        self.assertFalse(IsAPrereqMixin.model_is_registered(TestClassNotRegsistered))
 
 
 class PrereqModelTest(TenantTestCase):
@@ -213,21 +276,6 @@ class PrereqModelTest(TenantTestCase):
             quest3 = baker.make('quest_manager.Quest')
             some_object = object()
             Prereq.add_simple_prereq(quest3, some_object)
-
-    def test_cls_model_is_registered(self):
-        """A model that implements the IsAPrereqMixin returns True
-        """
-        ct = ContentType.objects.get(app_label='quest_manager', model='quest')
-        self.assertTrue(Prereq.model_is_registered(ct))
-
-        ct = ContentType.objects.get(app_label='auth', model='user')
-        self.assertFalse(Prereq.model_is_registered(ct))
-
-    def test_all_registered_content_types(self):
-        """There are 6 models that implement the IsAPrereqMixin
-        """
-        cts = Prereq.all_registered_content_types()
-        self.assertEqual(cts.count(), 6)
 
 
 class PrereqAllConditionsMetModelTest(TenantTestCase):

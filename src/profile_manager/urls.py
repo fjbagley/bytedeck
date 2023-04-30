@@ -1,4 +1,5 @@
 from django.conf.urls import url
+from django.urls import path
 
 from profile_manager import views
 
@@ -12,6 +13,8 @@ app_name = 'profile_manager'
 urlpatterns = [
     url(r'^list/all/$', views.ProfileList.as_view(), name='profile_list'),
     url(r'^list/current/$', views.ProfileListCurrent.as_view(), name='profile_list_current'),
+    url(r'^list/staff/$', views.ProfileListStaff.as_view(), name='profile_list_staff'),
+    url(r'^list/inactive/$', views.ProfileListInactive.as_view(), name='profile_list_inactive'),
     url(r'^tour/$', views.tour_complete, name='tour_complete'),
     url(r'^recalculate/current/$', views.recalculate_current_xp, name='recalculate_xp_current'),
     url(r'^(?P<pk>[0-9]+)/$', views.ProfileDetail.as_view(), name='profile_detail'),
@@ -20,6 +23,11 @@ urlpatterns = [
     url(r'^(?P<profile_id>[0-9]+)/comment_ban/$', views.comment_ban, name='comment_ban'),
     url(r'^(?P<pk>[0-9]+)/edit/$', views.ProfileUpdate.as_view(), name='profile_update'),
     url(r'^edit/own/$', views.ProfileUpdateOwn.as_view(), name='profile_edit_own'),
+    path('chart/<pk>/', views.TagChart.as_view(), name='tag_chart'),
+
+    path('oauth-merge-account/', views.oauth_merge_account, name='oauth_merge_account'),
+    path('password/change/<int:pk>/', views.PasswordReset.as_view(), name='change_password'),
+    path('<pk>/resend-email-verification/', views.ProfileResendEmailVerification.as_view(), name='profile_resend_email_verification'),
 
     # Examples
     # Template View Example

@@ -3,11 +3,12 @@ from datetime import timedelta
 from django.contrib.auth import get_user_model
 from django.db import connection
 from django.utils import timezone
+from django.conf import settings
 
 from django_celery_beat.models import PeriodicTask
+from django_tenants.test.cases import TenantTestCase
+from django_tenants.utils import get_public_schema_name, schema_context
 from model_bakery import baker
-from tenant_schemas.test.cases import TenantTestCase
-from tenant_schemas.utils import get_public_schema_name, schema_context
 
 from announcements import tasks
 from announcements.models import Announcement
@@ -79,7 +80,20 @@ class AnnouncementTasksTests(TenantTestCase):
                            course=course,
                            semester=semester)
         emails = get_users_to_email()
-        self.assertEqual(len(emails), 11)
+
+        # Everyone is unverified so this should be 0
+        self.assertEqual(len(emails), 0)
+
+        # Make everyone verified
+        from allauth.account.models import EmailAddress
+        self.assertEqual(EmailAddress.objects.count(), 0)
+
+        for user_obj in User.objects.filter(email__isnull=False).exclude(email=''):
+            EmailAddress.objects.create(user=user_obj, email=user_obj.email, verified=True, primary=True)
+
+        emails = get_users_to_email()
+
+        self.assertEqual(len(emails), 12 if settings.TENANT_DEFAULT_OWNER_EMAIL else 11)  # 11 + deck owner = 12
 
     def test_send_announcement_emails(self):
 

@@ -2,13 +2,14 @@ from datetime import date, datetime, timedelta
 
 from django.contrib.auth import get_user_model
 from django.utils import timezone
+from django.db.models import ProtectedError
 
+from django_tenants.test.cases import TenantTestCase
 from freezegun import freeze_time
-from mock import patch
+from unittest.mock import patch
 from model_bakery import baker
-from tenant_schemas.test.cases import TenantTestCase
 
-from courses.models import Block, Course, CourseStudent, ExcludedDate, Grade, MarkRange, Rank, Semester
+from courses.models import Block, Course, CourseStudent, ExcludedDate, MarkRange, Rank, Semester
 from siteconfig.models import SiteConfig
 
 User = get_user_model()
@@ -26,6 +27,9 @@ class MarkRangeTestModel(TenantTestCase):
 
 class MarkRangeTestManager(TenantTestCase):
     def setUp(self):
+        # clear default mark range variables
+        MarkRange.objects.all().delete()
+
         self.mr_50 = baker.make(MarkRange, minimum_mark=50.0)
 
     def test_get_range(self):
@@ -60,12 +64,14 @@ class MarkRangeTestManager(TenantTestCase):
 class BlockModelManagerTest(TenantTestCase):
 
     def test_grouped_teachers_blocks_equals_one(self):
-        """ Should only return 1 group of teachers if regardless of the number of Blocks """
+        """
+            Should only return 1 group of teachers if regardless of the number of Blocks
+        """
 
-        teacher_admin = User.objects.get(username='admin')
+        teacher_owner = User.objects.get(username='owner')
 
         for _ in range(5):
-            baker.make(Block, current_teacher=teacher_admin)
+            baker.make(Block, current_teacher=teacher_owner)
 
         group = Block.objects.grouped_teachers_blocks()
 
@@ -74,15 +80,15 @@ class BlockModelManagerTest(TenantTestCase):
     def test_grouped_teachers_blocks_more_than_one(self):
         """ Should return 3 group of teachers teaching Default, [AB] and [CD] blocks"""
 
-        teacher_admin = User.objects.get(username='admin')
+        teacher_owner = User.objects.get(username='owner')
         teacher1 = baker.make(User, username='teacher1', is_staff=True)
         teacher2 = baker.make(User, username='teacher2', is_staff=True)
 
-        block_default = Block.objects.get(block='Default')
-        block_a = baker.make(Block, block='A', current_teacher=teacher1)
-        block_b = baker.make(Block, block='B', current_teacher=teacher1)
-        block_c = baker.make(Block, block='C', current_teacher=teacher2)
-        block_d = baker.make(Block, block='D', current_teacher=teacher2)
+        block_default = Block.objects.get(name='Default')
+        block_a = baker.make(Block, name='A', current_teacher=teacher1)
+        block_b = baker.make(Block, name='B', current_teacher=teacher1)
+        block_c = baker.make(Block, name='C', current_teacher=teacher2)
+        block_d = baker.make(Block, name='D', current_teacher=teacher2)
 
         group = Block.objects.grouped_teachers_blocks()
 
@@ -90,11 +96,11 @@ class BlockModelManagerTest(TenantTestCase):
         self.assertEqual(len(group.keys()), 3)
 
         # admin teaches default block
-        self.assertListEqual(group[teacher_admin.id], [block_default.block])
+        self.assertListEqual(group[teacher_owner.id], [block_default.name])
         # teacher1 teaches A and B block
-        self.assertListEqual(group[teacher1.id], [block_a.block, block_b.block])
+        self.assertListEqual(group[teacher1.id], [block_a.name, block_b.name])
         # teacher2 teaches C and D block
-        self.assertListEqual(group[teacher2.id], [block_c.block, block_d.block])
+        self.assertListEqual(group[teacher2.id], [block_c.name, block_d.name])
 
 
 class SemesterModelManagerTest(TenantTestCase):
@@ -114,7 +120,6 @@ class SemesterModelManagerTest(TenantTestCase):
     def test_complete_active_semester(self):
         """ set current semester to closed and do lots of stuff..  """
         # TODO
-        pass
 
 
 class SemesterModelTest(TenantTestCase):
@@ -273,9 +278,20 @@ class CourseModelTest(TenantTestCase):
         baker.make(CourseStudent, user=student, course=self.course, semester=SiteConfig.get().active_semester)
         self.assertTrue(self.course.condition_met_as_prerequisite(student, 1))
 
-    def test_default_object_created(self):
-        """ A data migration should make a default object for this model """
-        self.assertTrue(Course.objects.filter(title="Default").exists())
+    def test_model_protection(self):
+        """
+            Quick test to see if Course model deletion is prevented when trying to delete Course model programmatically
+
+            Course deletion is only prevented when there are CourseStudent models linked via foreign key to the Course model
+        """
+        # make sure initial variables are inplace
+        student = baker.make(User)
+        course_student = baker.make(CourseStudent, user=student, course=self.course, semester=SiteConfig.get().active_semester)
+        self.assertTrue(CourseStudent.objects.count(), 1)
+        self.assertEqual(course_student.course, self.course)
+
+        # see if models.PROTECT is in place
+        self.assertRaises(ProtectedError, self.course.delete)
 
 
 class CourseStudentModelTest(TenantTestCase):
@@ -292,7 +308,7 @@ class CourseStudentModelTest(TenantTestCase):
     # def test_course_student_get_absolute_url(self):
     #     self.assertEqual(self.course_student.get_absolute_url(), reverse('courses:list'))
 
-    @ patch('courses.models.Semester.fraction_complete')
+    @patch('courses.models.Semester.fraction_complete')
     def test_calc_mark(self, fraction_complete):
         fraction_complete.return_value = 0.5
         course = baker.make(Course, xp_for_100_percent=100)
@@ -310,7 +326,7 @@ class CourseStudentModelTest(TenantTestCase):
         mark = course_student.calc_mark(50)
         self.assertEqual(mark, 50)
 
-    @ patch('courses.models.Semester.days_so_far')
+    @patch('courses.models.Semester.days_so_far')
     def test_xp_per_day_ave(self, days_so_far):
 
         self.student.profile.xp_cached = 120
@@ -323,25 +339,93 @@ class CourseStudentModelTest(TenantTestCase):
         xp_per_day = self.course_student.xp_per_day_ave()
         self.assertEqual(xp_per_day, 0)
 
+    @patch('profile_manager.models.Profile.xp_per_course')
+    def test_student_with_negative_xp(self, xp_per_course):
+        """Test if an assertion error is raised when there is a student with negative xp"""
+        xp_per_course.return_value = -10
+        self.assertRaises(ValueError, CourseStudent.objects.calc_semester_grades,
+                          Semester.objects.get_current())
+
 
 class BlockModelTest(TenantTestCase):
 
-    def test_default_object_created(self):
-        """ A data migration should make a default block """
-        self.assertTrue(Block.objects.filter(block="Default").exists())
+    def setUp(self):
+        self.student = baker.make(User)
+        self.block = baker.make(Block)
+
+    def test_model_protection(self):
+        """
+            Quick test to see if Block model deletion is prevented when trying to delete Block model programmatically
+            Block deletion is only prevented when there are CourseStudent models linked via foreign key to the Block model
+        """
+        # Setup
+
+        course_student = baker.make(CourseStudent, user=self.student, block=self.block)
+        self.assertTrue(CourseStudent.objects.count(), 1)
+        self.assertEqual(self.block, course_student.block)
+
+        # see if models.PROTECT is in place
+        self.assertRaises(ProtectedError, self.block.delete)
+
+    def test_condition_met_as_prerequisite(self):
+        """ If the user is registered in a course in this block during the active semester, then condition is met
+        Tests check condition on self.block for self.student """
+
+        # Student is not registered in any courses, so condition not met:
+        self.assertFalse(self.block.condition_met_as_prerequisite(self.student))
+
+        # Register student in a course in a  DIFFERENT block, condition still not met for self.block
+        baker.make(CourseStudent, user=self.student, block=baker.make(Block))
+        self.assertFalse(self.block.condition_met_as_prerequisite(self.student))
+
+        # Register student in a course in self.block, but not the active semester, condition still not met for self.block
+        baker.make(CourseStudent, user=self.student, block=self.block, semester=baker.make(Semester))
+        self.assertFalse(self.block.condition_met_as_prerequisite(self.student))
+
+        # Finally, register student in a course in self.block, and active semester, NOW condition is met for self.block
+        baker.make(CourseStudent, user=self.student, block=self.block, semester=SiteConfig.get().active_semester)
+        self.assertTrue(self.block.condition_met_as_prerequisite(self.student))
 
 
-class RankModelTest(TenantTestCase):
+class RankManagerTest(TenantTestCase):
 
-    def test_default_object_created(self):
-        """ A data migration should make default objects for this model """
-        self.assertTrue(Rank.objects.filter(name="Digital Noob").exists())
-        self.assertEqual(Rank.objects.count(), 13)
+    def setUp(self):
+        pass
 
+    def test_get_rank(self):
+        """ Test that the correct rank is returned for a given XP value"""
 
-class GradeModelTest(TenantTestCase):
+        # default ranks are create from 0-1000XP, so test above that range.
+        rank_2000 = baker.make(Rank, xp=2000)
+        rank_3000 = baker.make(Rank, xp=3000)
+        self.assertNotEqual(rank_2000, Rank.objects.get_rank(1999))
+        self.assertEqual(rank_2000, Rank.objects.get_rank(2000))
+        self.assertEqual(rank_2000, Rank.objects.get_rank(2001))
+        self.assertEqual(rank_3000, Rank.objects.get_rank(3000))
+        self.assertEqual(rank_3000, Rank.objects.get_rank(3001))
 
-    def test_default_object_created(self):
-        """ A data migration should make default objects for this model """
-        self.assertTrue(Grade.objects.filter(name="12").exists())
-        self.assertEqual(Grade.objects.count(), 5)
+    def test_get_rank__0XP_and_deleted(self):
+        """ There is a default rank at 0 XP, and the site doesn't break if that rank is missing """
+        rank_0 = Rank.objects.get_rank(0)
+        self.assertIsNotNone(rank_0)
+
+        rank_0.delete()
+        rank_0 = Rank.objects.get_rank(0)
+        self.assertIsNotNone(rank_0)
+
+    def test_get_next_rank(self):
+        """ Test that the correct rank is returned for a given XP value"""
+
+        # default ranks are create from 0-1000XP, so test above that range.
+        rank_2000 = baker.make(Rank, xp=2000)
+        rank_3000 = baker.make(Rank, xp=3000)
+        self.assertEqual(rank_2000, Rank.objects.get_next_rank(1999))
+        self.assertEqual(rank_3000, Rank.objects.get_next_rank(2000))
+        self.assertEqual(rank_3000, Rank.objects.get_next_rank(2999))
+        self.assertEqual(None, Rank.objects.get_next_rank(3000))
+
+    def test_get_next_rank__when_deleted(self):
+        """Method can handle if ranks were deleted """
+        Rank.objects.all().delete()
+        rank_1000 = Rank.objects.get_next_rank(1000)
+        self.assertIsNone(rank_1000)

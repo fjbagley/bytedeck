@@ -5,15 +5,25 @@ from django.core.mail import mail_admins
 from django.utils.translation import gettext_lazy as _
 
 from allauth.account.adapter import get_adapter
-from allauth.account.forms import ResetPasswordForm, SignupForm
+from allauth.account.forms import ResetPasswordForm, SignupForm, LoginForm
 from allauth.account.utils import filter_users_by_email
-# from captcha.fields import ReCaptchaField
-# from captcha.widgets import ReCaptchaV2Invisible
+from captcha.fields import ReCaptchaField
+from captcha.widgets import ReCaptchaV2Invisible
 
 from siteconfig.models import SiteConfig
+from allauth.socialaccount import forms as socialaccount_forms
 
 
-class CustomSignupForm(SignupForm):
+class SignupFormAccessCodeValidatorMixin:
+
+    def clean(self):
+        super().clean()
+        access_code = self.cleaned_data['access_code']
+        if access_code != SiteConfig.get().access_code:
+            raise forms.ValidationError("Access code unrecognized.")
+
+
+class CustomSignupForm(SignupFormAccessCodeValidatorMixin, SignupForm):
 
     first_name = forms.CharField(
         max_length=30,
@@ -35,13 +45,28 @@ class CustomSignupForm(SignupForm):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.fields['username'].help_text = 'Ask your teacher what you should be using for your username.'
+        self.fields['username'].help_text = 'Username is not case sensitive'
 
-    def clean(self):
-        super(CustomSignupForm, self).clean()
-        access_code = self.cleaned_data['access_code']
-        if access_code != SiteConfig.get().access_code:
-            raise forms.ValidationError("Access code unrecognized.")
+
+class CustomSocialAccountSignupForm(SignupFormAccessCodeValidatorMixin, socialaccount_forms.SignupForm):
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+        # Add fields from the default custom signup form
+        signup_form = CustomSignupForm()
+        self.fields['first_name'] = signup_form.fields['first_name']
+        self.fields['last_name'] = signup_form.fields['last_name']
+        self.fields['access_code'] = signup_form.fields['access_code']
+        self.fields['username'].help_text = signup_form.fields['username'].help_text
+        self.fields['email'].widget = forms.TextInput(attrs={'readonly': 'readonly'})
+
+
+class CustomLoginForm(LoginForm):
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields['login'].help_text = 'Username is not case sensitive'
 
 
 class PublicContactForm(forms.Form):
@@ -53,10 +78,10 @@ class PublicContactForm(forms.Form):
 
     # Not using because our recaptcha key is currently set up for checkbox only
     # and doesn't also support the invisible widget.
-    # captcha = ReCaptchaField(
-    #     label='',
-    #     widget=ReCaptchaV2Invisible
-    # )
+    captcha = ReCaptchaField(
+        label='',
+        widget=ReCaptchaV2Invisible
+    )
 
     def send_email(self):
         email = self.cleaned_data["email"]

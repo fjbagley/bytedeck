@@ -1,19 +1,29 @@
 import uuid
 
 from django.contrib import messages
-from django.contrib.admin.views.decorators import staff_member_required
 from django.contrib.auth.decorators import login_required
+from django.contrib.auth.mixins import LoginRequiredMixin
 from django.contrib.auth.models import User
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse_lazy
 from django.utils.decorators import method_decorator
-from django.views.generic.edit import DeleteView, UpdateView
+from django.views.generic import RedirectView
+from django.views.generic.edit import CreateView, DeleteView, UpdateView
+from django.views.generic.list import ListView
+
+from hackerspace_online.decorators import staff_member_required
 
 from notifications.signals import notify
+from prerequisites.views import ObjectPrereqsFormView
 from tenant.views import NonPublicOnlyViewMixin, non_public_only_view
 
 from .forms import BadgeAssertionForm, BadgeForm, BulkBadgeAssertionForm
 from .models import Badge, BadgeAssertion, BadgeType
+
+
+class AchievementRedirectView(NonPublicOnlyViewMixin, LoginRequiredMixin, RedirectView):
+    def dispatch(self, request):
+        return redirect(request.path_info.replace("achievements", "badges", 1))
 
 
 @non_public_only_view
@@ -35,13 +45,17 @@ def badge_list(request):
     return render(request, "badges/list.html", context)
 
 
+class BadgePrereqsUpdate(ObjectPrereqsFormView):
+    model = Badge
+
+
 class BadgeDelete(NonPublicOnlyViewMixin, DeleteView):
     model = Badge
     success_url = reverse_lazy('badges:list')
 
     @method_decorator(staff_member_required)
     def dispatch(self, *args, **kwargs):
-        return super(BadgeDelete, self).dispatch(*args, **kwargs)
+        return super().dispatch(*args, **kwargs)
 
 
 class BadgeUpdate(NonPublicOnlyViewMixin, UpdateView):
@@ -52,38 +66,26 @@ class BadgeUpdate(NonPublicOnlyViewMixin, UpdateView):
 
     def get_context_data(self, **kwargs):
         # Call the base implementation first to get a context
-        context = super(BadgeUpdate, self).get_context_data(**kwargs)
-        context['heading'] = "Update Achievment"
+        context = super().get_context_data(**kwargs)
+        context['heading'] = "Update Badge"
         context['submit_btn_value'] = "Update"
         return context
 
     @method_decorator(staff_member_required)
     def dispatch(self, *args, **kwargs):
-        return super(BadgeUpdate, self).dispatch(*args, **kwargs)
+        return super().dispatch(*args, **kwargs)
 
 
 @non_public_only_view
-@login_required
+@staff_member_required
 def badge_create(request):
-
-    # Using `@staff_member_required(login_url='/accounts/login/')` causes a RedirectCycleErrror.
-    # For example, a student that is already logged in tries to access this page,
-    # They will get redirect to `/accounts/login/?next=/achievements/create/`.
-    # And since they are already logged in, they will be redirected to `/achievements/create/`
-    # Causing again to redirect since they are not a staff.
-
-    # We could use `@staff_member_required(login_url='/')` but this breaks the tests
-    # which requires views to be redirected to /accounts/login
-    if request.user.is_active and not request.user.is_staff:
-        return redirect('quests:quests')
-
     form = BadgeForm(request.POST or None, request.FILES or None)
 
     if form.is_valid():
         form.save()
         return redirect('badges:list')
     context = {
-        "heading": "Create New Achievment",
+        "heading": "Create New Badge",
         "form": form,
         "submit_btn_value": "Create",
     }
@@ -93,12 +95,13 @@ def badge_create(request):
 @non_public_only_view
 @staff_member_required
 def badge_copy(request, badge_id):
+    original_badge = get_object_or_404(Badge, pk=badge_id)  # prevent: Badge objects need to have a primary key value before you can access their tags
     new_badge = get_object_or_404(Badge, pk=badge_id)
     new_badge.pk = None  # autogen a new primary key (quest_id by default)
     new_badge.import_id = uuid.uuid4()
     new_badge.name = "Copy of " + new_badge.name
 
-    form = BadgeForm(request.POST or None, instance=new_badge)
+    form = BadgeForm(request.POST or None, instance=new_badge, initial={'tags': original_badge.tags.all()})
     if form.is_valid():
         form.save()
         return redirect('badges:list')
@@ -124,6 +127,63 @@ def detail(request, badge_id):
         "assertions_of_this_badge": BadgeAssertion.objects.all_for_user_badge(request.user, badge, False)
     }
     return render(request, 'badges/detail.html', context)
+
+
+# ########## Badge Type Views ##############################
+
+@method_decorator(staff_member_required, name='dispatch')
+class BadgeTypeList(NonPublicOnlyViewMixin, LoginRequiredMixin, ListView):
+    model = BadgeType
+
+
+@method_decorator(staff_member_required, name='dispatch')
+class BadgeTypeCreate(NonPublicOnlyViewMixin, CreateView):
+    fields = ('name', 'sort_order', 'fa_icon')
+    model = BadgeType
+    success_url = reverse_lazy('badges:badge_types')
+
+    def get_context_data(self, **kwargs):
+
+        kwargs['heading'] = 'Create New Badge Type'
+        kwargs['submit_btn_value'] = 'Create'
+
+        return super().get_context_data(**kwargs)
+
+
+@method_decorator(staff_member_required, name='dispatch')
+class BadgeTypeUpdate(NonPublicOnlyViewMixin, UpdateView):
+    fields = ('name', 'sort_order', 'fa_icon')
+    model = BadgeType
+    success_url = reverse_lazy('badges:badge_types')
+
+    def get_context_data(self, **kwargs):
+
+        kwargs['heading'] = 'Update Badge Type'
+        kwargs['submit_btn_value'] = 'Update'
+
+        return super().get_context_data(**kwargs)
+
+
+@method_decorator(staff_member_required, name='dispatch')
+class BadgeTypeDelete(NonPublicOnlyViewMixin, DeleteView):
+    model = BadgeType
+    success_url = reverse_lazy('badges:badge_types')
+
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+
+        badge_type_badge_qs = Badge.objects.filter(badge_type=self.get_object())
+        context["has_badges"] = badge_type_badge_qs.exists()
+        return context
+
+    def post(self, request, *args, **kwargs):
+        # make sure no data can be passed in POST if populated
+        # makes sure to prevent 404/delete (because deletion still goes off)
+        has_badges = Badge.objects.filter(badge_type=self.get_object()).exists()
+        if has_badges:
+            return self.get(request, *args, **kwargs)
+
+        return super().post(request, *args, **kwargs)
 
 
 # ########## Badge Assertion Views #########################

@@ -11,8 +11,6 @@ from django.utils import timezone
 
 import numpy
 from colorful.fields import RGBColorField
-from jchart import Chart
-from jchart.config import DataSet, rgba
 
 from prerequisites.models import IsAPrereqMixin
 from quest_manager.models import QuestSubmission
@@ -86,12 +84,25 @@ class RankManager(models.Manager):
         return RankQuerySet(self.model, using=self._db).order_by('xp')
 
     def get_rank(self, user_xp=0):
+        """Return the next closest Rank with an XP value <= user_xp
+        Only allow user_xp values >= 0.  If no Rank is found, then create a Rank at xp=0
+        """
         if user_xp < 0:
             user_xp = 0
-        return self.get_queryset().get_ranks_lte(user_xp).last()
+
+        rank = self.get_queryset().get_ranks_lte(user_xp).last()
+        if not rank:
+            rank = self.create_zero_rank()
+        return rank
 
     def get_next_rank(self, user_xp=0):
+        """Return the next closest Rank with an XP value > user_xp"""
         return self.get_queryset().get_ranks_gt(user_xp).first()
+
+    def create_zero_rank(self):
+        zero_rank = Rank(xp=0, name="None", icon="fa fa-circle-o")
+        zero_rank.save()
+        return zero_rank
 
 
 class Rank(IsAPrereqMixin, models.Model):
@@ -172,7 +183,10 @@ class SemesterManager(models.Manager):
             return Semester.QUEST_AWAITING_APPROVAL
 
         # need to calculate all user XP and store in their Course
-        CourseStudent.objects.calc_semester_grades(active_sem)
+        try:
+            CourseStudent.objects.calc_semester_grades(active_sem)
+        except ValueError:
+            return Semester.STUDENTS_WITH_NEGATIVE_XP
 
         QuestSubmission.objects.remove_in_progress()
 
@@ -187,12 +201,12 @@ def default_end_date():
 
 
 class Semester(models.Model):
-
     CLOSED = -1
     QUEST_AWAITING_APPROVAL = -2
+    STUDENTS_WITH_NEGATIVE_XP = -3
 
-    first_day = models.DateField(blank=True, null=True, default=date.today)
-    last_day = models.DateField(blank=True, null=True, default=default_end_date)
+    first_day = models.DateField(null=True, default=date.today)
+    last_day = models.DateField(null=True, default=default_end_date)
     closed = models.BooleanField(
         default=False,
         help_text="All student courses in this semester have been closed and final marks recorded."
@@ -266,7 +280,8 @@ class Semester(models.Model):
         days = self.num_days()
         days_to_fraction = int(days * fraction_complete)
         excluded_days = self.excluded_days()
-        date_after_fraction = numpy.busday_offset(self.first_day, offsets=days_to_fraction, roll='backward', holidays=excluded_days)
+        date_after_fraction = numpy.busday_offset(self.first_day, offsets=days_to_fraction, roll='backward',
+                                                  holidays=excluded_days)
         return date_after_fraction.item()
 
     def get_datetime_by_days_since_start(self, class_days, add_holidays=False):
@@ -302,7 +317,8 @@ class Semester(models.Model):
     def reset_students_xp_cached(self):
 
         from profile_manager.models import Profile
-        profile_ids = CourseStudent.objects.all_users_for_active_semester(students_only=True).values_list('profile', flat=True)
+        profile_ids = CourseStudent.objects.all_users_for_active_semester(students_only=True).values_list('profile',
+                                                                                                          flat=True)
         profile_ids = set(profile_ids)
         profiles = Profile.objects.filter(id__in=profile_ids)
 
@@ -329,7 +345,7 @@ class DateType(models.Model):
 class BlockManager(models.Manager):
 
     def grouped_teachers_blocks(self):
-        blocks = self.get_queryset().select_related('current_teacher').values_list('current_teacher', 'block')
+        blocks = self.get_queryset().select_related('current_teacher').values_list('current_teacher', 'name')
         grouped = {}
 
         # Group by {teacher : [ blocks ]}
@@ -340,28 +356,36 @@ class BlockManager(models.Manager):
         return grouped
 
 
-class Block(models.Model):
-    block = models.CharField(max_length=50, unique=True)
-    start_time = models.TimeField(blank=True, null=True)
-    end_time = models.TimeField(blank=True, null=True)
+class Block(IsAPrereqMixin, models.Model):
+    name = models.CharField(max_length=50, unique=True)
+    description = models.TextField(blank=True, null=True)
     current_teacher = models.ForeignKey(settings.AUTH_USER_MODEL,
                                         null=True, blank=True,
                                         limit_choices_to={'is_staff': True},
                                         on_delete=models.SET_NULL)
+    active = models.BooleanField(default=True)
 
     objects = BlockManager()
 
-    def __str__(self):
-        return self.block
-
     class Meta:
-        ordering = ["start_time"]
+        ordering = ['name']
+        verbose_name = 'Group'
+
+    def __str__(self):
+        return self.name
+
+    def condition_met_as_prerequisite(self, user, num_required=1):
+        """ Returns True if the user has a current course in this block/group.  `num_required` is not used.
+        """
+        # num_required is not used for this one
+        return CourseStudent.objects.current_courses(user).filter(block=self).exists()
 
 
 class ExcludedDate(models.Model):
     semester = models.ForeignKey(Semester, on_delete=models.CASCADE)
-    date_type = models.ForeignKey(DateType, on_delete=models.SET_NULL, null=True)
+    date_type = models.ForeignKey(DateType, on_delete=models.SET_NULL, blank=True, null=True)
     date = models.DateField(unique=True)
+    label = models.CharField(max_length=100, blank=True, null=True, help_text="An optional label for this date.")
 
     def __str__(self):
         return self.date.strftime("%d-%b-%Y")
@@ -393,6 +417,10 @@ class Course(IsAPrereqMixin, models.Model):
     @staticmethod
     def autocomplete_search_fields():  # for grapelli prereq selection
         return ("title__icontains",)
+
+    @staticmethod
+    def gfk_search_fields():
+        return ["title__icontains"]
 
 
 class CourseStudentQuerySet(models.query.QuerySet):
@@ -447,6 +475,9 @@ class CourseStudentManager(models.Manager):
         coursestudents = self.get_queryset().get_semester(semester)
         for coursestudent in coursestudents:
             coursestudent.final_xp = coursestudent.user.profile.xp_per_course()
+            if coursestudent.final_xp < 0:
+                raise ValueError(f"{coursestudent.user.get_full_name()} has a negative XP. "
+                                 f"Fix it before closing the semester")
             coursestudent.active = False
             coursestudent.save()
 
@@ -483,14 +514,12 @@ class CourseStudentManager(models.Manager):
 
 
 class CourseStudent(models.Model):
-    GRADE_CHOICES = ((9, 9), (10, 10), (11, 11), (12, 12), (13, 'Adult'))
-
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
     semester = models.ForeignKey(Semester, on_delete=models.SET_NULL, null=True)
-    block = models.ForeignKey(Block, on_delete=models.SET_NULL, null=True)
-    course = models.ForeignKey(Course, on_delete=models.SET_NULL, null=True)
-    # grade = models.PositiveIntegerField(choices=GRADE_CHOICES, null=True, blank=True)
-    grade_fk = models.ForeignKey(Grade, verbose_name="Grade", on_delete=models.SET_NULL, null=True)
+    block = models.ForeignKey(Block, on_delete=models.PROTECT, null=True, verbose_name="Group")
+    course = models.ForeignKey(Course, on_delete=models.PROTECT, null=True)
+    # grade is deprecated, shouldn't be used anywhere any more
+    grade_fk = models.ForeignKey(Grade, verbose_name="Grade", on_delete=models.SET_NULL, null=True, blank=True)
     xp_adjustment = models.IntegerField(default=0)
     xp_adjust_explanation = models.CharField(max_length=255, blank=True, null=True)
     final_xp = models.PositiveIntegerField(blank=True, null=True)
@@ -508,15 +537,14 @@ class CourseStudent(models.Model):
         ordering = ['-semester', 'block']
 
     def __str__(self):
-        return self.user.get_username() \
-            + ", " + str(self.semester) if self.semester else "" \
-            + ", " + str(self.block.block) if self.block else "" \
-            + ": " + str(self.course) \
-            + " " + str(self.grade_fk.value) if self.grade_fk else ""
+        return f"{self.user.get_username()}" \
+               f'{", " + str(self.semester) if self.semester else ""}' \
+               f'{", " + str(self.block.name) if self.block else ""}' \
+               f': {self.course}'
 
     # def get_absolute_url(self):
     #     return reverse('courses:list')
-        # return reverse('courses:detail', kwargs={'pk': self.pk})
+    # return reverse('courses:detail', kwargs={'pk': self.pk})
 
     # @cached_property
     def calc_mark(self, xp):
@@ -541,98 +569,3 @@ def coursestudent_post_save_callback(instance, **kwargs):
     If they make a manual XP adjustment we need to invalidate the user's xp_cache to recalculate xp
     """
     instance.user.profile.xp_invalidate_cache()
-
-
-class MarkDistributionHistogram(Chart):
-    chart_type = 'bar'
-    scales = {
-        'xAxes': [{
-            'barPercentage': 1.05,
-            'categoryPercentage': 1.05,
-            'gridLines': {
-                'offsetGridLines': False,
-                'display': False,
-            },
-            'stacked': True,
-            # 'scaleLabel': {
-            #   'display': True,
-            #   'labelString': 'Current mark as a percentage'
-            # }
-        }],
-        'yAxes': [{
-            'stacked': True,
-            # 'scaleLabel': {
-            #     'display': True,
-            #     'labelString': '# of students in this mark range'
-            # }
-        }]
-
-    }
-    options = {
-        'maintainAspectRatio': False,
-    }
-    histogram = {'labels': [], 'data': []}
-    bin_size = 10
-
-    def get_labels(self, **kwargs):
-
-        if not self.histogram['labels']:
-            self.generate_histogram()
-        return self.histogram['labels']
-
-    def get_datasets(self, user_id):
-
-        if not self.histogram['data']:
-            self.generate_histogram()
-
-        user_data = self.generate_user_data(user_id)  # needs to be before getting histogram data
-        all_course_data = self.histogram['data']
-
-        course_dataset = DataSet(label='# of other students in this mark range',
-                                 data=all_course_data,
-                                 borderWidth=1,
-                                 backgroundColor=rgba(128, 128, 128, 0.3),
-                                 borderColor=rgba(0, 0, 0, 0.2),
-                                 )
-        # course_dataset['stack'] = 'marks'
-
-        user_dataset = DataSet(label='You',
-                               data=user_data,
-                               )
-        # user_dataset['stack'] = 'marks'
-
-        return [course_dataset, user_dataset, ]
-
-    def generate_user_data(self, user_id):
-        """ Create a list for the histogram filled with 0's except the bin with the user's mark
-        """
-        user = User.objects.get(id=user_id)
-        user_mark = user.profile.mark()
-        data = []
-        index = 0
-        for mark_bin in range(0, 100 + self.bin_size, self.bin_size):
-            if mark_bin <= user_mark < mark_bin + self.bin_size:
-                data.append(1)
-                # Remove this data point from the main data
-                self.histogram['data'][index] -= 1
-            else:
-                data.append(0)
-            index += 1
-        return data
-
-    def generate_histogram(self):
-        data = Semester.objects.get_current().get_student_mark_list(students_only=True)
-        # data = numpy.random.normal(0, 20, 1000)
-        right_edge = 100 + self.bin_size
-        bins = numpy.arange(0, right_edge, self.bin_size)
-        bins_list = bins.tolist()  # numpy uses some weird ass array format, lets get a list from it
-        bins_list.append(999)  # include everything >100 in the last bin
-        hist, bin_edges = numpy.histogram(data, bins_list)
-        self.histogram['data'] = hist.tolist()
-
-        # do some work to get labels correct
-        # don't wan't the last bin 999 to appear as a label on the chart
-        bin_labels = [str(bin_label) + "%" for bin_label in bins_list]
-        bin_labels[-1] = ""
-        bin_labels[-2] = "100%+"
-        self.histogram['labels'] = bin_labels

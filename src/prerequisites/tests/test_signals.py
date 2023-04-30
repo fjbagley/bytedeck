@@ -1,10 +1,10 @@
 from django.contrib.auth import get_user_model
 
+from django_tenants.test.cases import TenantTestCase
+from django_tenants.test.client import TenantClient
 from freezegun import freeze_time
-from mock import patch
+from unittest.mock import patch
 from model_bakery import baker
-from tenant_schemas.test.cases import TenantTestCase
-from tenant_schemas.test.client import TenantClient
 
 from badges.models import Badge, BadgeAssertion
 from courses.models import CourseStudent, Semester
@@ -91,6 +91,16 @@ class PrerequisitesSignalsTest(TenantTestCase):
         badge = baker.make(Badge, active=True)  # creation
         badge.active = False
         badge.save()  # update
+        self.assertEqual(task.call_count, 2)
+
+    @patch('prerequisites.signals.update_quest_conditions_all_users.apply_async')
+    def test_update_cache_triggered_by_quest_without_prereqs(self, task):
+        """
+        Creation and Update of a Quest without a prerequisite should trigger a cache update
+        """
+        quest = baker.make(Quest)   # creation
+        quest.verification_required = False
+        quest.save()  # update
         self.assertEqual(task.call_count, 2)
 
     @patch('prerequisites.signals.update_conditions_for_quest.apply_async')

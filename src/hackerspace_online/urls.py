@@ -19,6 +19,7 @@ from django.conf.urls.static import static
 from django.contrib import admin
 from django.urls import include
 
+from badges.views import AchievementRedirectView
 from hackerspace_online import views
 from siteconfig.models import SiteConfig
 
@@ -43,15 +44,18 @@ urlpatterns += [
     url(r'^comments/', include('comments.urls', namespace='comments')),
     url(r'^notifications/', include('notifications.urls', namespace='notifications')),
     url(r'^courses/', include('courses.urls', namespace='courses')),
-    url(r'^achievements/', include('badges.urls', namespace='badges')),
+    url(r'^achievements/', AchievementRedirectView.as_view()),
+    url(r'^badges/', include('badges.urls', namespace='badges')),
     url(r'^maps/', include('djcytoscape.urls', namespace='maps')),
     url(r'^portfolios/', include('portfolios.urls', namespace='portfolios')),
     url(r'^utilities/', include('utilities.urls', namespace='utilities')),
     url(r'^config/', include('siteconfig.urls', namespace='config')),
     url(r'^decks/', include('tenant.urls', namespace='decks')),
+    # bytedeck summernote
+    url(r'^summernote/', include('bytedeck_summernote.urls')),
 
-    # summer_note
-    url(r'^summernote/', include('django_summernote.urls')),
+    url(r'^tags/', include('tags.urls', namespace='tags')),
+
     # allauth
     url(r'^accounts/password/reset/$',
         views.CustomPasswordResetView.as_view(),

@@ -41,11 +41,12 @@ WSGI_APPLICATION = 'hackerspace_online.wsgi.application'
 
 # Application definition
 SHARED_APPS = (
-    'tenant_schemas',
+    'django_tenants',
     'tenant',
     'django.contrib.contenttypes',
 
     # WHY ARE THESE NEEDED IN BOTH SHARED AND TENANT APPS LISTS?
+    # dylan was here :P delete me later
     'django.contrib.auth',
     'django.contrib.admin',
     'django.contrib.sessions',
@@ -56,6 +57,7 @@ SHARED_APPS = (
     'allauth',
     'allauth.account',
     'allauth.socialaccount',
+    'allauth.socialaccount.providers.google',
 
     # tenant beat is not supported, have to do it manually with:
     # https://github.com/maciej-gol/tenant-schemas-celery#celery-beat-integration
@@ -73,7 +75,6 @@ SHARED_APPS = (
     'bootstrap_datepicker_plus',
     'embed_video',
     'django_select2',
-    'jchart',
     'url_or_relative_url_field',
     'import_export',
     'colorful',
@@ -99,8 +100,15 @@ TENANT_APPS = (
     # by inserting the schema into the task headers so that tenant-schams-celery knows where to run it
     'django_celery_beat',
 
+    'django.contrib.sites',  # required inside TENANT_APPS for allauth to work
+
     'hackerspace_online',
+
+    # https://github.com/summernote/django-summernote
     'django_summernote',
+    'bytedeck_summernote',
+
+    'taggit',
 
     'quest_manager',
     'profile_manager',
@@ -114,15 +122,16 @@ TENANT_APPS = (
     'portfolios',
     'utilities',
     'siteconfig',
+    'tags',
 )
 
 
 INSTALLED_APPS = (
-    'tenant_schemas',
-    'tenant.apps.TenantConfig',
-
     # http://django-grappelli.readthedocs.org/en/latest/quickstart.html
     'grappelli',
+
+    'django_tenants',
+    'tenant.apps.TenantConfig',
 
     # default apps
     'django.contrib.admin',
@@ -141,7 +150,7 @@ INSTALLED_APPS = (
     'allauth',
     'allauth.account',
     'allauth.socialaccount',
-    # 'allauth.socialaccount.providers.google',
+    'allauth.socialaccount.providers.google',
     # 'allauth.socialaccount.providers.facebook',
 
     # http://django-crispy-forms.readthedocs.org/en/latest/install.html
@@ -149,6 +158,7 @@ INSTALLED_APPS = (
 
     # https://github.com/summernote/django-summernote
     'django_summernote',
+    'bytedeck_summernote',
 
     # https://pypi.org/project/django-recaptcha/
     'captcha',
@@ -162,9 +172,6 @@ INSTALLED_APPS = (
 
     # https://github.com/applegrew/django-select2
     'django_select2',
-
-    # https://github.com/matthisk/django-jchart
-    'jchart',
 
     # https://github.com/timonweb/django-url-or-relative-url-field
     'url_or_relative_url_field',
@@ -183,6 +190,9 @@ INSTALLED_APPS = (
     # django storages
     'storages',
 
+    # django-taggit: https://django-taggit.readthedocs.io/en/latest/index.html
+    'taggit',
+
     # local apps
     'quest_manager',
     'profile_manager',
@@ -196,10 +206,13 @@ INSTALLED_APPS = (
     'portfolios',
     'utilities',
     'siteconfig',
+    'tags',
 )
 
+TAGGIT_CASE_INSENSITIVE = True
+
 MIDDLEWARE = [
-    'tenant_schemas.middleware.TenantMiddleware',
+    'django_tenants.middleware.TenantMiddleware',
     # caching: https://docs.djangoproject.com/en/1.10/topics/cache/
     # 'django.middleware.cache.UpdateCacheMiddleware',
     # 'django.middleware.cache.FetchFromCacheMiddleware',
@@ -277,6 +290,9 @@ TEMPLATES = [
     },
 ]
 
+DEFAULT_AUTO_FIELD = "django.db.models.AutoField"
+
+
 # REDIS AND CACHES #################################################
 
 REDIS_HOST = env('REDIS_HOST', default='127.0.0.1')  # os.environ.get('REDIS_HOST', '127.0.0.1')
@@ -289,8 +305,8 @@ CACHES = {
         'OPTIONS': {
             'CLIENT_CLASS': 'django_redis.client.DefaultClient',
         },
-        'KEY_FUNCTION': 'tenant_schemas.cache.make_key',
-        'REVERSE_KEY_FUNCTION': 'tenant_schemas.cache.reverse_key',
+        'KEY_FUNCTION': 'django_tenants.cache.make_key',
+        'REVERSE_KEY_FUNCTION': 'django_tenants.cache.reverse_key',
     },
     'select2': {
         'BACKEND': 'django_redis.cache.RedisCache',
@@ -298,8 +314,8 @@ CACHES = {
         "OPTIONS": {
             "CLIENT_CLASS": "django_redis.client.DefaultClient",
         },
-        'KEY_FUNCTION': 'tenant_schemas.cache.make_key',
-        'REVERSE_KEY_FUNCTION': 'tenant_schemas.cache.reverse_key',
+        'KEY_FUNCTION': 'django_tenants.cache.make_key',
+        'REVERSE_KEY_FUNCTION': 'django_tenants.cache.reverse_key',
         'TIMEOUT': None,
     }
 }
@@ -342,7 +358,7 @@ POSTGRES_PASSWORD = env('POSTGRES_PASSWORD', default=None)
 
 DATABASES = {
     'default': {
-        'ENGINE': 'tenant_schemas.postgresql_backend',
+        'ENGINE': 'django_tenants.postgresql_backend',
         'NAME': POSTGRES_DB_NAME,
         'USER': POSTGRES_USER,
         'PASSWORD': POSTGRES_PASSWORD,
@@ -352,7 +368,7 @@ DATABASES = {
 }
 
 DATABASE_ROUTERS = (
-    'tenant_schemas.routers.TenantSyncRouter',
+    'django_tenants.routers.TenantSyncRouter',
 )
 
 
@@ -452,13 +468,18 @@ DEFAULT_SUPERUSER_EMAIL = env('DEFAULT_SUPERUSER_EMAIL', default='admin@example.
 # TENANTS ###############################################################
 
 TENANT_MODEL = "tenant.Tenant"
+TENANT_DOMAIN_MODEL = "tenant.TenantDomain"
 
-TENANT_DEFAULT_SUPERUSER_USERNAME = env('TENANT_DEFAULT_SUPERUSER_USERNAME')
-TENANT_DEFAULT_SUPERUSER_PASSWORD = env('TENANT_DEFAULT_SUPERUSER_PASSWORD')
+TENANT_DEFAULT_ADMIN_USERNAME = env('TENANT_DEFAULT_ADMIN_USERNAME')
+TENANT_DEFAULT_ADMIN_PASSWORD = env('TENANT_DEFAULT_ADMIN_PASSWORD')
+
+TENANT_DEFAULT_OWNER_USERNAME = env('TENANT_DEFAULT_OWNER_USERNAME')
+TENANT_DEFAULT_OWNER_PASSWORD = env('TENANT_DEFAULT_OWNER_PASSWORD')
+TENANT_DEFAULT_OWNER_EMAIL = env('TENANT_DEFAULT_OWNER_EMAIL', default='')
 
 # See this: https://github.com/timberline-secondary/hackerspace/issues/388
 # The design choice for media files it serving all the media files from one directory instead of separate directory for each tenant.
-SILENCED_SYSTEM_CHECKS = ['tenant_schemas.W003']
+SILENCED_SYSTEM_CHECKS = ['django_tenants.W003']
 
 
 # RECAPTCHA #######################################################
@@ -483,6 +504,7 @@ SILENCED_SYSTEM_CHECKS += ['captcha.recaptcha_test_key_error']
 
 
 # AUTHENTICATION ##################################################
+SESSION_COOKIE_AGE = env("SESSION_COOKIE_AGE", default=int(60 * 60 * 24 * 7 * 8))  # 8 Weeks
 
 AUTHENTICATION_BACKENDS = (
 
@@ -495,21 +517,26 @@ AUTHENTICATION_BACKENDS = (
 )
 
 # AllAuth Configuration
-# SOCIALACCOUNT_PROVIDERS = \
-#     {'facebook':
-#          {'SCOPE': ['email', 'public_profile'],
-#           'AUTH_PARAMS': {'auth_type': 'reauthenticate'},
-#           'METHOD': 'oauth2',
-#           # 'LOCALE_FUNC': 'path.to.callable',
-#           'VERIFIED_EMAIL': False,
-#           'VERSION': 'v2.3'}
-#      }
+SOCIALACCOUNT_PROVIDERS = {
+    'google': {
+        'SCOPE': [
+            'profile',
+            'email',
+        ],
+        'AUTH_PARAMS': {
+            'access_type': 'offline',
+            # https://developers.google.com/identity/openid-connect/openid-connect#prompt
+            'prompt': 'select_account',
+        },
+        'OAUTH_PKCE_ENABLED': True,
+    }
+}
 
 # https://django-allauth.readthedocs.org/en/latest/configuration.html
 LOGIN_REDIRECT_URL = '/'
 # https://stackoverflow.com/questions/44571373/python-3-6-django1-10-login-required-decorator-redirects-to-link-with-missing/44571408#44571408
 LOGIN_URL = 'account_login'
-# ACCOUNT_ADAPTER #(=”allauth.account.adapter.DefaultAccountAdapter”)
+ACCOUNT_ADAPTER = "hackerspace_online.adapter.CustomAccountAdapter"
 # Specifies the adapter class to use, allowing you to alter certain default behaviour.
 ACCOUNT_AUTHENTICATION_METHOD = "username"  # (=”username” | “email” | “username_email”)
 # Specifies the login method to use – whether the user logs in by entering their username,
@@ -524,7 +551,7 @@ ACCOUNT_EMAIL_CONFIRMATION_AUTHENTICATED_REDIRECT_URL = LOGIN_REDIRECT_URL  # (=
 # Determines the expiration date of email confirmation mails (# of days).
 # ACCOUNT_EMAIL_REQUIRED = True #(=False)
 # The user is required to hand over an e-mail address when signing up.
-ACCOUNT_EMAIL_VERIFICATION = None  # (=”optional”)
+ACCOUNT_EMAIL_VERIFICATION = "optional"
 # Determines the e-mail verification method during signup – choose one of “mandatory”, “optional”, or “none”. When set to “mandatory”
 # the user is blocked from logging in until the email address is verified. Choose “optional” or “none” to allow logins with an unverified
 # e-mail address. In case of “optional”, the e-mail verification mail is still sent, whereas in case of “none” no e-mail verification mails are sent.
@@ -535,13 +562,35 @@ ACCOUNT_EMAIL_VERIFICATION = None  # (=”optional”)
 # see the section on HTTPS for more information.
 # ACCOUNT_FORMS #(={})
 # Used to override forms, for example: {‘login’: ‘myapp.forms.LoginForm’}
-ACCOUNT_FORMS = {'signup': 'hackerspace_online.forms.CustomSignupForm'}
+ACCOUNT_FORMS = {
+    'signup': 'hackerspace_online.forms.CustomSignupForm',
+    'login': 'hackerspace_online.forms.CustomLoginForm',
+}
 # ACCOUNT_LOGOUT_ON_GET #(=False)
 # Determines whether or not the user is automatically logged out by a mere GET request. See documentation for the LogoutView for details.
 ACCOUNT_LOGOUT_ON_PASSWORD_CHANGE = True  # (=False)
 # Determines whether or not the user is automatically logged out after changing the password. See documentation for Django’s session invalidation
 #  on password change. (Django 1.7+)
 ACCOUNT_LOGOUT_REDIRECT_URL = LOGIN_URL  # (=”/”)
+ACCOUNT_PRESERVE_USERNAME_CASING = False
+ACCOUNT_UNIQUE_EMAIL = True
+
+# The maximum amount of email addresses a user can associate to his account.
+# It is safe to change this setting for an already running project –
+# it will not negatively affect users that already exceed the allowed amount.
+# Note that if you set the maximum to 1, users will not be able to change their
+# email address as they are unable to add the new address,
+# followed by removing the old address.
+# Uses the `allauth.account.models.EmailAddress`
+ACCOUNT_MAX_EMAIL_ADDRESSES = 2
+
+
+SOCIALACCOUNT_AUTO_SIGNUP = False
+SOCIALACCOUNT_FORMS = {
+    'signup': 'hackerspace_online.forms.CustomSocialAccountSignupForm',
+}
+SOCIALACCOUNT_EMAIL_REQUIRED = True
+SOCIALACCOUNT_ADAPTER = "hackerspace_online.adapter.CustomSocialAccountAdapter"
 
 
 #################################
@@ -599,7 +648,6 @@ SUMMERNOTE_CONFIG = {
             # You have to include theme file in 'css' or 'css_for_inplace' before using it.
             'theme': 'monokai',
         },
-
     },
 
     # Need authentication while uploading attachments.
@@ -709,12 +757,25 @@ DJANGORESIZED_DEFAULT_QUALITY = 90
 DJANGORESIZED_DEFAULT_SIZE = [256, 256]
 DJANGORESIZED_DEFAULT_FORCE_FORMAT = None
 
+# django-taggit
+TAGGIT_CASE_INSENSITIVE = True
+
 
 # DEBUG / DEVELOPMENT SPECIFIC SETTINGS #################################
 
 if DEBUG:
 
+    import socket
     INTERNAL_IPS = ['127.0.0.1', '0.0.0.0']
+
+    # Solves an issue where django-debug-toolbar is not showing when running inside a docker container
+    # See: https://gist.github.com/douglasmiranda/9de51aaba14543851ca3#gistcomment-2916867
+    # get ip address for docker host
+    hostname, _, ips = socket.gethostbyname_ex(socket.gethostname())
+    for ip in ips:
+        # replace last octet in IP with .1
+        ip = '{}.1'.format(ip.rsplit('.', 1)[0])
+        INTERNAL_IPS.append(ip)
 
     # DEBUG TOOLBAR
     MIDDLEWARE += ['debug_toolbar.middleware.DebugToolbarMiddleware', ]
@@ -740,6 +801,10 @@ if DEBUG:
         'debug_toolbar.panels.logging.LoggingPanel',
         'debug_toolbar.panels.redirects.RedirectsPanel',
     ]
+
+    # DEBUG_TOOLBAR_CONFIG = {
+    #     'SHOW_TOOLBAR_CALLBACK': lambda request: not request.is_ajax()
+    # }
 
 
 # TESTING ##################################################

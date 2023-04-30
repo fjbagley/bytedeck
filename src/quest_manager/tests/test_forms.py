@@ -1,6 +1,6 @@
 from django.utils import timezone
 
-from tenant_schemas.test.cases import TenantTestCase
+from django_tenants.test.cases import TenantTestCase
 
 from quest_manager.forms import QuestForm
 
@@ -17,6 +17,7 @@ class QuestFormTest(TenantTestCase):
             "sort_order": 0,
             "date_available": str(timezone.now().date()),
             "time_available": "0:00:00",
+            "tags": "",
         }
 
     def test_minimal_valid_data(self):

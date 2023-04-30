@@ -2,7 +2,8 @@ import functools
 
 from django import template
 from django.db import connection
-from tenant_schemas.utils import get_public_schema_name
+
+from django_tenants.utils import get_public_schema_name
 
 from siteconfig.models import SiteConfig
 from utilities.models import MenuItem
@@ -41,9 +42,33 @@ def favicon_url():
     return SiteConfig.get().get_favicon_url()
 
 
+@register.simple_tag
+@not_allow_public_tenant
+def tag_name():
+    return SiteConfig.get().custom_name_for_tag
+
+
+@register.simple_tag
+@not_allow_public_tenant
+def group_name():
+    return SiteConfig.get().custom_name_for_group
+
+
 # https://docs.djangoproject.com/en/1.11/howto/custom-template-tags/#inclusion-tags
 
 @register.inclusion_tag('utilities/list_of_links.html')
 def menu_list():
     links = MenuItem.objects.filter(visible=True)
     return {'links': links}
+
+
+@register.filter
+def checkcross(value):
+    """
+    Converts a boolean value to a corresponding class value for a fontawesome check or cross (times) icon
+    Usage: <i class="{{ booleanvalue | crosscheck }}"></i>
+    """
+    if value is True:
+        return 'fa fa-check'
+    elif value is False:
+        return 'fa fa-times'

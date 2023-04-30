@@ -1,9 +1,6 @@
 from django.urls import path
 
-from jchart.views import ChartView
-
 from courses import views
-from courses.models import MarkDistributionHistogram
 
 app_name = 'courses'
 
@@ -13,7 +10,8 @@ urlpatterns = [
     path('semesters/', views.SemesterList.as_view(), name='semester_list'),
     path('semesters/add/', views.SemesterCreate.as_view(), name='semester_create'),
     path('semesters/<pk>/edit/', views.SemesterUpdate.as_view(), name='semester_update'),
-    path('close_semester/', views.end_active_semester, name='end_active_semester'),
+    path('semesters/close/', views.end_active_semester, name='end_active_semester'),
+    path('semesters/<pk>/activate/', views.SemesterActivate.as_view(), name='semester_activate'),
 
     # Blocks
     path('blocks/', views.BlockList.as_view(), name='block_list'),
@@ -22,8 +20,10 @@ urlpatterns = [
     path('blocks/<pk>/delete/', views.BlockDelete.as_view(), name='block_delete'),
 
     # CourseStudent
-    path('add/student/', views.CourseStudentCreate.as_view(), name='create'),
-    path('join/<int:user_id>/', views.CourseAddStudent.as_view(), name='join'),
+    path('student/add/', views.CourseStudentCreate.as_view(), name='create'),
+    path('student/<int:user_id>/join/', views.CourseAddStudent.as_view(), name='join'),
+    path('student/<pk>/edit/', views.CourseStudentUpdate.as_view(), name='update'),
+    path('student/<pk>/delete/', views.CourseStudentDelete.as_view(), name='coursestudent_delete'),
 
     # Ranks
     path('ranks/', views.RankList.as_view(), name='ranks'),
@@ -35,9 +35,8 @@ urlpatterns = [
     path('marks/', views.mark_calculations, name='my_marks'),
     path('marks/<int:user_id>', views.mark_calculations, name='marks'),
     path('ajax/progress_chart/<int:user_id>/', views.ajax_progress_chart, name='ajax_progress_chart'),
-
-    path('charts/bar_chart/<int:user_id>)/', ChartView.from_chart(MarkDistributionHistogram()),
-         name='mark_distribution_chart'),
+    path('ajax/marks_bar_chart/<int:user_id>/', views.Ajax_MarkDistributionChart.as_view(), name='mark_distribution_chart'),
+    path('ajax/tag_progress_chart/<int:user_id>/', views.Ajax_TagChart.as_view(), name='ajax_tag_progress_chart'),
 
     # Course
     path('list/', views.CourseList.as_view(), name='course_list'),

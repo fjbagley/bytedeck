@@ -1,13 +1,21 @@
 {% extends "profile_manager/base.html" %}
+{% load utility_tags %}
 
 {% block heading_inner %}{{ object.get_preferred_name }}'s Profile
     <div class="btn-group" role="group">
       <a class="btn btn-info" title="Edit your Profile"
         href="{% url 'profiles:profile_update' object.id %}"
         role="button"><i class="fa fa-cog"></i></a>
-      <a class="btn btn-warning" title="Change your Password"
+
+      {% if request.user.is_staff and not object.user.is_staff %}
+        <a class="btn btn-warning" title="Change User's Password"
+          href="{% url 'profiles:change_password' object.user.pk %}"
+          role="button"><i class="fa fa-key"></i></a>
+      {% else %}
+        <a class="btn btn-warning" title="Change Password"
         href="{% url 'account_change_password' %}"
         role="button"><i class="fa fa-key"></i></a>
+      {% endif %}
 
       {% if config.display_marks_calculation %}
         <a class= "btn btn-primary" title="View your Mark Calculations"
@@ -58,7 +66,7 @@
               {% for course in courses %}
                 <div class="pull-right"> {{xp_per_course|floatformat:0}} / {{course.course.xp_for_100_percent}} XP </div>
                 <div>
-                    {{course.course}} {{course.grade_fk}}
+                    {{course.course}}
                 </div>
                 <div class="progress progress-xp"><!--&nbsp; {% widthratio xp_per_course 1000 100 %}&#37;-->
                   <div class="progress-bar" role="progressbar" aria-valuenow="{{xp_per_course}}" aria-valuemin="0" aria-valuemax="1000"
@@ -100,42 +108,46 @@
        <div class="panel-heading">
          <i class="pull-right fa fa-fw fa-book"></i>
          <h3 class="panel-title">Courses
-           {% if request.user.is_staff %}
+           {% if request.user.is_staff and not object.user.is_staff %}
              &nbsp;&nbsp;<a class="btn btn-xs btn-warning"
              href="{% url 'courses:join' object.user.id %}" role="button">Add</a>
            {% endif %}
          </h3>
        </div>
        <ul class="list-group">
-         {% if courses %}
-             {% for course in courses %}
-               <li class="list-group-item">
-                 {{course.course}} {{course.grade_fk}}
-                 {% if request.user.is_staff %}
-                   (<a href="/admin/courses/coursestudent/{{course.id}}/">edit</a>)
-                 {% endif %}
-                 <br/>
-                 <small>{{course.block}} Block, Semester {{course.semester}}
-                 {% if course.xp_adjustment != 0 %}<br/>XP Adjustment: {{course.xp_adjustment}} XP
-                 (reason: {{course.xp_adjust_explanation}})
-                 {% endif %}
-                 </small>
-               </li>
-             {% endfor %}
-         {% else %}
-           <li class="list-group-item">You have not joined a course yet for this semester.
-             <a href="{% url 'courses:create' %}" class="btn btn-info" role="button">Join a Course</a>
-           </li>
+         {% if not object.user.is_staff %}
+          {% if courses %}
+              {% for course in courses %}
+                <li class="list-group-item">
+                  {{course.course}}
+                  {% if request.user.is_staff %}
+                    (<a href="{% url 'courses:update' course.id %}">edit</a>)
+                  {% endif %}
+                  <br/>
+                  <small>{{course.block}}, Semester {{course.semester}}
+                  {% if course.xp_adjustment != 0 %}<br/>XP Adjustment: {{course.xp_adjustment}} XP
+                  (reason: {{course.xp_adjust_explanation}})
+                  {% endif %}
+                  </small>
+                </li>
+              {% endfor %}
+          {% else %}
+            <li class="list-group-item">You have not joined a course yet for this semester.
+              <a href="{% url 'courses:create' %}" class="btn btn-info" role="button">Join a Course</a>
+            </li>
+          {%endif%}
+        {% else %}
+            <li class="list-group-item">Not applicable to staff users.</li>
          {% endif %}
          {% if courses_old %}
              {% for course in courses_old %}
                <li class="list-group-item text-muted">
-                 {{course.course}} {{course.grade_fk}}
+                 {{course.course}}
                  {% if request.user.is_staff %}
-                   (<a href="/admin/courses/coursestudent/{{course.id}}/">edit</a>)
+                   (<a href="{% url 'courses:update' course.id %}">edit</a>)
                  {% endif %}
                  <br/>
-                 <small>{{course.block}} Block, {{course.semester}}
+                 <small>{{course.block}}, {{course.semester}}
                  <br/>Final XP: {{course.final_xp}}
                  </small>
                </li>
@@ -158,7 +170,7 @@
                  {% if s.is_returned %}list-group-item-danger
                  {% endif %}">
                <img class="icon-xs" src="{{ s.quest.get_icon_url }}" alt=""/>
-               {{s|truncatechars:40}} 
+               {{s|truncatechars:40}}
                <small>({% if s.quest.xp_can_be_entered_by_students %}{{s.xp_requested}}*{% else %}{{s.quest.xp}}{% endif %} XP)</small>
              </a>
            {% endfor %}
@@ -256,7 +268,7 @@
           {% for assertion in assertions %}
             {% with assertions_of_this_badge=assertion.get_duplicate_assertions badge=assertion.badge %}
             <span class="hidden-xs"> {# only use popover on wider screens #}
-              <a {% include 'badges/snippets/badge_popover.html' %} >
+              <a {% include 'badges/snippets/badge_popover.html' with user_obj=object.user %} >
                 {% include 'profile_manager/snippets/profile_badge.html' %}
               </a>
             </span>
@@ -278,6 +290,34 @@
       </div> <!--list-group -->
     </div> <!-- panel -->
   </div> <!-- col -->
+
+  <!-- TAGS -->
+  <div class="col-sm-6">
+    <div class="panel panel-primary">
+
+      <div class="panel-heading">
+        <i class="pull-right fa fa-fw fa-tags"></i>
+        <h3 class="panel-title">
+          XP earned by {% tag_name %}
+          &nbsp;&nbsp;<a class="btn btn-xs btn-warning" href="{% url 'profiles:tag_chart' pk=object.user.pk %}" role="button"><i class="fa fa-line-chart"></i></a>
+        </h3>
+      </div>
+
+      <div class="list-group">
+        {% for tag, xp in tags %}
+          <a href="{% url 'tags:detail_student' tag_pk=tag.pk user_pk=object.user.pk %}" class="list-group-item list-group-item-packed">
+              <small>
+                {{tag|truncatechars:40}}
+                <span class="pull-right">{{xp}} XP</span>
+              </small>
+          </a>
+        {% empty %}
+          <div class="list-group-item">None.</div>
+        {% endfor %}
+      </div>
+
+    </div>
+  </div>
 
 
 

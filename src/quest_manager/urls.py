@@ -66,6 +66,7 @@ urlpatterns = [
     url(r'^(?P<quest_id>[0-9]+)/$', views.detail, name='quest_detail'),
     url(r'^create/$', views.QuestCreate.as_view(), name='quest_create'),
     url(r'^(?P<pk>[0-9]+)/edit/$', views.QuestUpdate.as_view(), name='quest_update'),
+    url(r'^(?P<pk>[0-9]+)/prereqs/edit/$', views.QuestPrereqsUpdate.as_view(), name='quest_prereqs_update'),
     url(r'^(?P<quest_id>[0-9]+)/copy/$', views.QuestCopy.as_view(), name='quest_copy'),
     url(r'^(?P<pk>[0-9]+)/delete/$', views.QuestDelete.as_view(), name='quest_delete'),
     url(r'^(?P<quest_id>[0-9]+)/start/$', views.start, name='start'),
@@ -94,8 +95,12 @@ urlpatterns = [
     # Campaigns / Categories
     path('campaigns/', views.CategoryList.as_view(), name='categories'),
     path('campaigns/add/', views.CategoryCreate.as_view(), name='category_create'),
+    path('campaigns/<pk>/', views.CategoryDetail.as_view(), name='category_detail'),
     path('campaigns/<pk>/edit/', views.CategoryUpdate.as_view(), name='category_update'),
     path('campaigns/<pk>/delete/', views.CategoryDelete.as_view(), name='category_delete'),
 
-    # url(r'^in-progress/(?P<pk>[0-9]+)/delete/$', views.SubmissionDelete.as_view(), name='sub_delete'),
+    path('common-quest-info/list/', views.CommonDataListView.as_view(), name='commonquestinfo_list'),
+    path('common-quest-info/create/', views.CommonDataCreateView.as_view(), name='commonquestinfo_create'),
+    path('common-quest-info/update/<pk>/', views.CommonDataUpdateView.as_view(), name='commonquestinfo_update'),
+    path('common-quest-info/delete/<pk>/', views.CommonDataDeleteView.as_view(), name='commonquestinfo_delete'),
 ]

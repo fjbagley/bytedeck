@@ -1,48 +1,78 @@
+from allauth.socialaccount.models import SocialLogin
 from django.contrib import messages
-from django.contrib.admin.views.decorators import staff_member_required
+from django.contrib.auth import get_user_model
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth.mixins import UserPassesTestMixin
-from django.http import Http404
+from django.http import Http404, HttpResponseForbidden, HttpResponseRedirect
 
-from django.shortcuts import get_object_or_404, redirect
+from django.shortcuts import get_object_or_404, redirect, render
+from django.urls import reverse
 from django.utils.decorators import method_decorator
-from django.views.generic import DetailView, ListView
-from django.views.generic.edit import UpdateView
+from django.views.generic import DetailView, ListView, TemplateView
+from django.views.generic.edit import UpdateView, FormView
+
+from hackerspace_online.decorators import staff_member_required
 
 from .models import Profile
-from .forms import ProfileForm
+from .forms import ProfileForm, UserForm
 from badges.models import BadgeAssertion
 from courses.models import CourseStudent
 from notifications.signals import notify
 from quest_manager.models import QuestSubmission
+from tags.models import get_user_tags_and_xp
 from tenant.views import NonPublicOnlyViewMixin, non_public_only_view
+
+from django.contrib.auth.forms import SetPasswordForm
+
+from allauth.account.utils import send_email_confirmation
+from allauth.account.models import EmailAddress
+from allauth.socialaccount.helpers import _complete_social_login
+
+User = get_user_model()
+
+
+class ViewTypes:
+    """ enum for ProfileList and its descendants """
+    LIST = 0
+    CURRENT = 1
+    STAFF = 2
+    INACTIVE = 3
 
 
 class ProfileList(NonPublicOnlyViewMixin, UserPassesTestMixin, ListView):
     model = Profile
     template_name = 'profile_manager/profile_list.html'
 
+    # this will determine which button will be active in self.template_name
+    # also if view_type=ViewTypes.STAFF will render a different partial template
+    view_type = ViewTypes.LIST
+
     def test_func(self):
         return self.request.user.is_staff
 
     def queryset_append(self, profiles_qs):
         profiles_qs = profiles_qs.select_related('user__portfolio')
-        # blocks = Block.objects.all()
-        # blocks_dict = {x.pk: x for x in blocks}
 
         for profile in profiles_qs:
             profile.blocks_value = profile.blocks()
+            profile.courses = profile.current_courses().values_list('course__title', flat=True)
             profile.mark_value = profile.mark()
             profile.last_submission_completed_value = profile.last_submission_completed()
         return profiles_qs
 
     def get_queryset(self):
-        profiles_qs = Profile.objects.all_students()
+        profiles_qs = Profile.objects.all_students().get_active()
         return self.queryset_append(profiles_qs)
+
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        context['VIEW_TYPES'] = ViewTypes
+        context['view_type'] = self.view_type
+        return context
 
     @method_decorator(login_required)
     def dispatch(self, request, *args, **kwargs):
-        return super(ProfileList, self).dispatch(request, *args, **kwargs)
+        return super().dispatch(request, *args, **kwargs)
 
 
 class ProfileListCurrent(ProfileList):
@@ -53,6 +83,7 @@ class ProfileListCurrent(ProfileList):
     Arguments:
         ProfileList -- Base class
     """
+    view_type = ViewTypes.CURRENT
 
     # override the staff requirement for ProfileList
     def test_func(self):
@@ -62,10 +93,21 @@ class ProfileListCurrent(ProfileList):
         profiles_qs = Profile.objects.all_for_active_semester()
         return self.queryset_append(profiles_qs)
 
-    def get_context_data(self, **kwargs):
-        context = super(ProfileListCurrent, self).get_context_data(**kwargs)
-        context['current_only'] = True
-        return context
+
+@method_decorator(staff_member_required, name='dispatch')
+class ProfileListStaff(ProfileList):
+    view_type = ViewTypes.STAFF
+
+    def get_queryset(self):
+        return Profile.objects.filter(user__is_staff=True)
+
+
+@method_decorator(staff_member_required, name='dispatch')
+class ProfileListInactive(ProfileList):
+    view_type = ViewTypes.INACTIVE
+
+    def get_queryset(self):
+        return Profile.objects.all_inactive()
 
 
 # Profiles are automatically created with each user, so there is never a teacher to create on manually.
@@ -90,14 +132,14 @@ class ProfileDetail(NonPublicOnlyViewMixin, DetailView):
         # only allow the users to see their own profiles, or admins
         profile_user = get_object_or_404(Profile, pk=self.kwargs.get('pk')).user
         if profile_user == self.request.user or self.request.user.is_staff:
-            return super(ProfileDetail, self).dispatch(*args, **kwargs)
+            return super().dispatch(*args, **kwargs)
 
         return redirect('quests:quests')
 
     def get_context_data(self, **kwargs):
         # Call the base implementation first to get a context
         profile = get_object_or_404(Profile, pk=self.kwargs.get('pk'))
-        context = super(ProfileDetail, self).get_context_data(**kwargs)
+        context = super().get_context_data(**kwargs)
 
         # in_progress_submissions = QuestSubmission.objects.all_not_completed(request.user)
         # completed_submissions = QuestSubmission.objects.all_completed(request.user)
@@ -110,6 +152,7 @@ class ProfileDetail(NonPublicOnlyViewMixin, DetailView):
         context['completed_past_submissions'] = QuestSubmission.objects.all_completed_past(profile.user)
         context['xp_per_course'] = profile.xp_per_course()
         context['badge_assertions_dict_items'] = BadgeAssertion.objects.badge_assertions_dict_items(profile.user)
+        context['tags'] = get_user_tags_and_xp(profile.user)
 
         # earned_assertions = BadgeAssertion.objects.all_for_user_distinct(profile.user)
         # assertion_dict = defaultdict(list)
@@ -127,27 +170,78 @@ class ProfileDetail(NonPublicOnlyViewMixin, DetailView):
         return context
 
 
-class ProfileUpdate(NonPublicOnlyViewMixin, UpdateView):
-    model = Profile
-    form_class = ProfileForm
-    template_name = 'profile_manager/form.html'
-
-    def get_context_data(self, **kwargs):
-        profile = self.get_object()
-        # Call the base implementation first to get a context
-        context = super(ProfileUpdate, self).get_context_data(**kwargs)
-        context['heading'] = "Editing " + profile.user.get_username() + "'s Profile"
-        context['submit_btn_value'] = "Update"
-        context['profile'] = profile
-        return context
+class ProfileOwnerOrIsStaffMixin:
 
     @method_decorator(login_required)
     def dispatch(self, *args, **kwargs):
         profile_user = self.get_object().user
         if profile_user == self.request.user or self.request.user.is_staff:
-            return super(ProfileUpdate, self).dispatch(*args, **kwargs)
-        else:
-            raise Http404("Sorry, this profile isn't yours!")
+            return super().dispatch(*args, **kwargs)
+        raise Http404("Sorry, this profile isn't yours!")
+
+
+class ProfileUpdate(NonPublicOnlyViewMixin, ProfileOwnerOrIsStaffMixin, UpdateView):
+    model = Profile
+    profile_form_class = ProfileForm
+    user_form_class = UserForm
+    template_name = 'profile_manager/form.html'
+
+    def get_object(self):
+        return get_object_or_404(self.model, pk=self.kwargs["pk"])
+
+    # returns a list of existing form instances or new ones
+    def get_forms(self):
+        forms = [self.get_profile_form()]
+        if self.request.user.is_staff:
+            forms.append(self.get_user_form())
+
+        return forms
+
+    def post(self, request, *args, **kwargs):
+        forms = self.get_forms()
+
+        # check if all form instances are valid else ...
+        if all([form.is_valid() for form in forms]):
+            return self.form_valid(forms)
+        return self.form_invalid(forms)
+
+    def get_context_data(self, **kwargs):
+        profile = self.get_object()
+        context = {}
+
+        # return instance of form or new form instance
+        context['forms'] = kwargs.get('form', self.get_forms())
+
+        context['heading'] = "Editing " + profile.user.get_username() + "'s Profile"
+        context['submit_btn_value'] = "Update"
+        context['profile'] = profile
+
+        return context
+
+    # returns instance of ProfileForm
+    def get_profile_form(self):
+        form_kwargs = super().get_form_kwargs()
+        form_kwargs['instance'] = self.get_object()
+        form_kwargs['request'] = self.request
+
+        return self.profile_form_class(**form_kwargs)
+
+    # returns instance of UserForm
+    def get_user_form(self):
+        form_kwargs = super().get_form_kwargs()
+        form_kwargs['instance'] = self.get_object().user
+
+        return self.user_form_class(**form_kwargs)
+
+    # runs if all forms are valid
+    def form_valid(self, forms, *args, **kwargs):
+        for form in forms:
+            form.save()
+
+        return HttpResponseRedirect(self.get_success_url())
+
+    def get_success_url(self):
+        return reverse("profiles:profile_detail", args=[self.get_object().pk])
 
 
 class ProfileUpdateOwn(ProfileUpdate):
@@ -157,8 +251,141 @@ class ProfileUpdateOwn(ProfileUpdate):
         return self.request.user.profile
 
 
+class PasswordReset(FormView):
+    form_class = SetPasswordForm
+    template_name = 'profile_manager/password_change_form.html'
+
+    def get_instance(self):
+        model_pk = self.kwargs['pk']
+        return get_user_model().objects.get(pk=model_pk)
+
+    @method_decorator(staff_member_required)
+    def dispatch(self, *args, **kwargs):
+        user = self.get_instance()
+        if user.is_staff:
+            return HttpResponseForbidden("Staff users are forbidden")
+        return super().dispatch(*args, **kwargs)
+
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        profile = self.get_instance().profile
+
+        context['heading'] = "Changing " + profile.user.get_username() + "'s Password"
+        context['submit_btn_value'] = "Update"
+
+        return context
+
+    def get_form(self):
+        return PasswordReset.form_class(user=self.get_instance(), **self.get_form_kwargs())
+
+    def form_valid(self, form):
+        form.save()
+        return super().form_valid(form)
+
+    def get_success_url(self):
+        return reverse('profiles:profile_update', args=[self.get_instance().profile.pk])
+
+
+class ProfileResendEmailVerification(
+    NonPublicOnlyViewMixin,
+    ProfileOwnerOrIsStaffMixin,
+    DetailView
+):
+
+    model = Profile
+
+    def get(self, request, *args, **kwargs):
+
+        profile = self.get_object()
+        user = profile.user
+
+        email_address = EmailAddress.objects.filter(email=user.email).first()
+
+        # This is for handling a user that has previously added an email address but has no EmailAddress
+        user_has_email = bool(user.email or email_address)
+
+        # This condition exists in case a user with an empty User.email tries to access this URL
+        if not user_has_email:
+            messages.error(request, "User does not have an email")
+            return redirect_to_previous_page(request)
+
+        # This condition exists in case an already verified user tries to access this URL
+        if email_address and email_address.verified:
+            messages.info(request, "Your email address has already been verified.")
+            return redirect_to_previous_page(request)
+
+        send_email_confirmation(
+            request=request,
+            user=user,
+            signup=False,
+            email=user.email,
+        )
+
+        return redirect_to_previous_page(request)
+
+
+class TagChart(NonPublicOnlyViewMixin, TemplateView):
+    template_name = 'profile_manager/tag_chart.html'
+
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        context["user"] = get_object_or_404(get_user_model(), pk=self.kwargs['pk'])
+        return context
+
+
 @non_public_only_view
-@staff_member_required(login_url='/')
+def oauth_merge_account(request):
+
+    merge_with_user_id = request.session.get('merge_with_user_id')
+    user = get_object_or_404(User, id=merge_with_user_id)
+
+    if request.method == "POST":
+
+        merge_account = request.POST.get('submit') == 'yes'
+
+        # The socialaccount_sociallogin must've been removed from the session
+        # or there is no user to merge with so we don't have anything else to do...
+        if not merge_with_user_id:
+            return redirect('account_login')
+
+        if merge_account:
+            # Remove the merge_with_user_id and socialaccount_sociallogin from the session object
+            # since we don't want to pollute it
+
+            request.session.pop('merge_with_user_id')
+            socialaccount_data = request.session.pop('socialaccount_sociallogin', None)
+            sociallogin = SocialLogin.deserialize(socialaccount_data)
+            sociallogin.connect(request, user)
+
+            # Automatically verify email during account merge
+            try:
+                email_address = EmailAddress.objects.get(email=user.email)
+            except EmailAddress.DoesNotExist:
+                email_address = EmailAddress(email=user.email)
+
+            email_address.user = user
+            email_address.verified = True
+            email_address.primary = True
+            email_address.save()
+
+            return _complete_social_login(request, sociallogin)
+        else:
+            # Remove the email from that user
+            user.emailaddress_set.filter(email=user.email).delete()
+            user.email = ''
+            user.save()
+
+            return redirect('socialaccount_signup')
+
+    context = {
+        'other_account_username': user.username,
+        'email_address': user.email,
+    }
+    return render(request, 'socialaccount/merge.html', context)
+
+
+@non_public_only_view
+@staff_member_required
 def recalculate_current_xp(request):
     profiles_qs = Profile.objects.all_for_active_semester()
     for profile in profiles_qs:
@@ -179,7 +406,7 @@ def tour_complete(request):
 
 
 @non_public_only_view
-@staff_member_required(login_url='/')
+@staff_member_required
 def xp_toggle(request, profile_id):
     profile = get_object_or_404(Profile, id=profile_id)
     profile.not_earning_xp = not profile.not_earning_xp
@@ -188,13 +415,13 @@ def xp_toggle(request, profile_id):
 
 
 @non_public_only_view
-@staff_member_required(login_url='/')
+@staff_member_required
 def comment_ban_toggle(request, profile_id):
     return comment_ban(request, profile_id, toggle=True)
 
 
 @non_public_only_view
-@staff_member_required(login_url='/')
+@staff_member_required
 def comment_ban(request, profile_id, toggle=False):
     profile = get_object_or_404(Profile, id=profile_id)
     if toggle:

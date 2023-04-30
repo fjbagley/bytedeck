@@ -17,22 +17,80 @@ from siteconfig.models import SiteConfig
 from badges.models import BadgeAssertion
 from comments.models import Comment
 from prerequisites.models import Prereq, IsAPrereqMixin, HasPrereqsMixin, PrereqAllConditionsMet
+from tags.models import TagsModelMixin
 # from utilities.models import ImageResource
 
 # from django.contrib.contenttypes.models import ContentType
 # from django.contrib.contenttypes import generic
 
 
-class Category(models.Model):
+class Category(IsAPrereqMixin, models.Model):
+    """ Used to group quests into 'Campaigns'
+    """
     title = models.CharField(max_length=50, unique=True)
     icon = models.ImageField(upload_to='icons/', null=True, blank=True)
-    active = models.BooleanField(default=True)
+    active = models.BooleanField(
+        default=True,
+        help_text="Quests that are a part of an inactive campaign won't appear on quest maps and won't be available to students."
+    )
 
     class Meta:
         verbose_name = "campaign"
         ordering = ["title"]
 
     def __str__(self):
+        return self.title
+
+    def get_absolute_url(self):
+        return reverse('quests:category_detail', kwargs={'pk': self.id})
+
+    def get_icon_url(self):
+        if self.icon and hasattr(self.icon, 'url'):
+            return self.icon.url
+        else:
+            return SiteConfig.get().get_default_icon_url()
+
+    def current_quests(self):
+        """ Returns a queryset containing every currently available quest in this campaign."""
+        return self.quest_set.all().visible().not_archived()
+
+    def quest_count(self):
+        """ Returns the total number of quests available in this campaign."""
+        return self.current_quests().count()
+
+    def xp_sum(self):
+        """ Returns the total XP available from completing all visible quests in this campaign.
+        Repeating quests are only counted once."""
+        return self.current_quests().aggregate(Sum('xp'))['xp__sum']
+
+    def condition_met_as_prerequisite(self, user, num_required=1):
+        """
+        The prerequisite is met if all quests in the campaign have been completed by the user
+        param num_required: not used.
+        """
+
+        # get all the quests in this campaign/category
+        quests = self.quest_set.all()
+
+        # get all approved submissions of these quests for this user
+        submissions = QuestSubmission.objects.all_approved(user=user, active_semester_only=False).filter(quest__in=quests)
+
+        # remove duplicates with distinct so only one submission per quest is counted
+        # (there could be more than one submission if there are repeatable quests in the campaign)
+        submissions = submissions.order_by('quest_id').distinct('quest')
+
+        return quests.count() == submissions.count()
+
+    @staticmethod
+    def autocomplete_search_fields():  # for grapelli prereq selection
+        return ("title__icontains",)
+
+    @staticmethod
+    def gfk_search_fields():  # for AllowedGFKChoiceFiled
+        return ["title__icontains"]
+
+    @property
+    def name(self):
         return self.title
 
 
@@ -59,14 +117,19 @@ class XPItem(models.Model):
     datetime_created = models.DateTimeField(auto_now_add=True, auto_now=False)
     datetime_last_edit = models.DateTimeField(auto_now_add=False, auto_now=True)
     short_description = models.CharField(max_length=500, blank=True, null=True)
-    visible_to_students = models.BooleanField(default=True)
-    archived = models.BooleanField(default=False,
-                                   help_text='Setting this will prevent it from appearing in admin quest lists.  '
-                                             'To un-archive a quest, you will need to access it through Site Administration.')
+    visible_to_students = models.BooleanField(
+        default=True, verbose_name="published",
+        help_text="If not checked, this quest will not be visible to students and will appear in your Drafts tab."
+    )
+    archived = models.BooleanField(
+        default=False,
+        help_text='Setting this will prevent it from appearing in admin quest lists.  '
+        'To un-archive a quest, you will need to access it through Site Administration.'
+    )
     sort_order = models.IntegerField(default=0)
     max_repeats = models.IntegerField(default=0, help_text='0 = not repeatable; -1 = unlimited repeats')
     max_xp = models.IntegerField(
-        default=-1, 
+        default=-1,
         help_text="The maximum amount of XP that can be gain by repeating this quest. If the Max Repeats hasn't been hit yet \
         then quest will continue to appear after this number is reached, but students will no longer \
         gain XP for completing it; -1 = unlimited"
@@ -76,7 +139,7 @@ class XPItem(models.Model):
         help_text='Repeatable once per semester, and Max Repeats becomes additional repeats per semester'
     )
     hours_between_repeats = models.PositiveIntegerField(default=0)
-    date_available = models.DateField(default=timezone.now)  # timezone aware!
+    date_available = models.DateField(default=timezone.localdate)  # timezone aware!
     time_available = models.TimeField(default=datetime_safe.time.min)  # midnight local time
     date_expired = models.DateField(blank=True, null=True,
                                     help_text='If both Date and Time expired are blank, then the quest never expires')
@@ -87,7 +150,11 @@ class XPItem(models.Model):
 
     class Meta:
         abstract = True
-        ordering = ["-sort_order", "-time_expired", "-date_expired", "name"]
+        # manual ordering of a quest queryset places quests with smaller sort_order values above larger ones by default
+        # as such, the original value for sort_order (-sort_order,) orders quests upside-down
+        # the sort_order value in this list should be reverted to -sort_order once manually sorting is not necessary
+        # further information can be found here: https://github.com/bytedeck/bytedeck/pull/1179
+        ordering = ["sort_order", "-time_expired", "-date_expired", "name"]
 
     def __str__(self):
         return self.name
@@ -131,28 +198,48 @@ class XPItem(models.Model):
         """
         now_local = timezone.now().astimezone(timezone.get_default_timezone())
 
-        # not available yet today
+        # XPItem is not active if it is not published (i.e. a draft = visible_to_students=False), or archived
+        if not self.visible_to_students or self.archived:
+            return False
+
+        # XPItem/Quest object is inactive if it's a part of an inactive campaign
+        if hasattr(self, 'campaign') and self.campaign and not self.campaign.active:
+            return False
+
+        if self.expired():
+            return False
+
+        # an XPItem object is inactive if its availability date is in the future
         if self.date_available > now_local.date():
             return False
 
-        # available today, but not time yet
+        # an XPItem object is inactive on the day it's made available if its availability time is in the future
         if self.date_available == now_local.date() and self.time_available > now_local.time():
             return False
 
-        return self.visible_to_students and not self.expired()
+        # If survived all the conditions, then it's active
+        return True
 
     def is_available(self, user):
         """This quest should be in the user's available tab.  Doesn't check exactly, but same criteria.
         Should probably put criteria in one spot and share.  See QuestManager.get_available()"""
-        return self.active and \
-            QuestSubmission.objects.not_submitted_or_inprogress(user, self) and \
-            Prereq.objects.all_conditions_met(self, user)
+
+        available = (
+            self.active
+            and QuestSubmission.objects.not_submitted_or_inprogress(user, self)
+            and Prereq.objects.all_conditions_met(self, user)
+        )
+
+        if available and not user.profile.has_current_course:
+            return self.available_outside_course
+
+        return available
 
     def is_repeatable(self):
         return self.max_repeats != 0
 
 
-class QuestQuerySet(models.query.QuerySet):
+class QuestQuerySet(models.QuerySet):
 
     def exclude_hidden(self, user):
         """ Users can "hide" quests.  This is stored in their profile as a list of quest ids """
@@ -209,6 +296,12 @@ class QuestQuerySet(models.query.QuerySet):
     def visible(self):
         return self.filter(visible_to_students=True)
 
+    def active_or_no_campaign(self):
+        """With self as an argument, returns a filtered queryset
+        containing only quests in active campaigns or quests without campaigns.
+        """
+        return self.exclude(campaign__active=False)
+
     def not_archived(self):
         return self.exclude(archived=True)
 
@@ -260,7 +353,7 @@ class QuestQuerySet(models.query.QuerySet):
             return self.filter(editor=user.id)
 
     def get_pk_met_list(self, user):
-        model_name = '{}.{}'.format(Quest._meta.app_label, Quest._meta.model_name)
+        model_name = f'{Quest._meta.app_label}.{Quest._meta.model_name}'
         pk_met_list = PrereqAllConditionsMet.objects.filter(user=user, model_name=model_name).first()
         if not pk_met_list:
             from prerequisites.tasks import update_quest_conditions_for_user
@@ -277,40 +370,42 @@ class QuestManager(models.Manager):
         return qs
 
     def get_active(self):
-        return self.get_queryset().datetime_available().not_expired().visible()
+        return self.get_queryset().datetime_available().not_expired().visible().active_or_no_campaign()
 
     def get_available(self, user, remove_hidden=True, blocking=True):
         """ Quests that should appear in the user's Available quests tab.   Should exclude:
         1. Quests whose available date & time has not past, or quest that have expired
         2. Quests that are not visible to students or archived
-        3. Quests who's prerequisites have not been met
-        4. Quests that are not currently submitted for approval or already in progress
-        5. Quests who's maximum repeats have been completed
-        6. Quests who's repeat time has not passed since last completion
-        7. Check for blocking quests (available and in-progress), if present, remove all others
+        3. Quests that are a part of an inactive campaign
+        4. Quests whose prerequisites have not been met
+        5. Quests that are not currently submitted for approval or already in progress
+        6. Quests whose maximum repeats have been completed
+        7. Quests whose repeat time has not passed since last completion
+        8. Check for blocking quests (available and in-progress), if present, remove all others
         """
-        qs = self.get_active().select_related('campaign')  # exclusions 1 & 2
-        qs = qs.get_conditions_met(user)  # 3
-        available_quests = qs.not_submitted_or_inprogress(user)  # 4,5 & 6
+        qs = self.get_active().select_related('campaign')  # exclusions 1, 2 & 3
+        qs = qs.get_conditions_met(user)  # 4
+        available_quests = qs.not_submitted_or_inprogress(user)  # 5, 6 & 7
 
-        available_quests = available_quests.block_if_needed(user=user)  # 7
+        available_quests = available_quests.block_if_needed(user=user)  # 8
         if remove_hidden:
             available_quests = available_quests.exclude_hidden(user)
         return available_quests
 
     def get_available_without_course(self, user):
         qs = self.get_active().get_conditions_met(user).available_without_course()
-        return qs.get_list_not_submitted_or_inprogress(user)
+        return qs.not_submitted_or_inprogress(user)
 
     def all_drafts(self, user):
         qs = self.get_queryset().filter(visible_to_students=False)
+
         if user.is_staff:
             return qs
         else:  # TA
             return qs.editable(user)
 
 
-class Quest(IsAPrereqMixin, HasPrereqsMixin, XPItem):
+class Quest(IsAPrereqMixin, HasPrereqsMixin, TagsModelMixin, XPItem):
     verification_required = models.BooleanField(default=True,
                                                 help_text="Teacher must approve submissions of this quest.  If \
                                                 unchecked then submissions will automatically be approved and XP \
@@ -349,6 +444,11 @@ class Quest(IsAPrereqMixin, HasPrereqsMixin, XPItem):
                                    help_text="When this quest becomes available, it will block all other "
                                              "non-blocking quests until this one is submitted.")
 
+    map_transition = models.BooleanField(
+        default=False,
+        help_text='Break maps at this quest. This quest will link to a new map.'
+    )
+
     # What does this do to help us?
     prereq_parent = GenericRelation(Prereq,
                                     content_type_field='parent_content_type',
@@ -364,9 +464,14 @@ class Quest(IsAPrereqMixin, HasPrereqsMixin, XPItem):
 
     objects = QuestManager()
 
+    # Python by default doesn't inherit inner classes. In this case, the default ordering provided in XPItem.Meta is
+    # not inherited, therefore we are doing it here.
+    class Meta(XPItem.Meta):
+        pass
+
     @classmethod
     def get_model_name(cls):
-        return '{}.{}'.format(cls._meta.app_label, cls._meta.model_name)
+        return f'{cls._meta.app_label}.{cls._meta.model_name}'
 
     def get_icon_url(self):
         if self.icon and hasattr(self.icon, 'url'):
@@ -497,7 +602,7 @@ class QuestSubmissionQuerySet(models.query.QuerySet):
             pk_sub_list = [
                 sub.pk for sub in self
                 if (
-                    teacher.pk in sub.user.profile.teachers() or 
+                    teacher.pk in sub.user.profile.teachers() or
                     (sub.quest.specific_teacher_to_notify == teacher if sub.quest else False)  # will error if quest has been deleted
                 )
             ]
@@ -646,6 +751,11 @@ class QuestSubmissionManager(models.Manager):
         else:
             return 0
 
+    def last_submission(self, user, quest):
+        qs = self.all_for_user_quest(user, quest, False).order_by('ordinal')
+
+        return qs.last()
+
     def quest_is_available(self, user, quest):
         """
         :return: True if the quest should appear on the user's available quests tab
@@ -676,20 +786,21 @@ class QuestSubmissionManager(models.Manager):
         return quest.is_repeat_available(user)
 
     def create_submission(self, user, quest):
-        # this logic should probably be removed from this location?
-        # When would I want to return None that isn't already handled?
-        if self.not_submitted_or_inprogress(user, quest):
-            ordinal = self.num_submissions(user, quest) + 1
-            new_submission = QuestSubmission(
-                quest=quest,
-                user=user,
-                ordinal=ordinal,
-                semester_id=SiteConfig.get().active_semester.pk,
-            )
-            new_submission.save()
-            return new_submission
+        last_submission = self.last_submission(user, quest)
+
+        if last_submission:
+            ordinal = last_submission.ordinal + 1
         else:
-            return None
+            ordinal = 1
+
+        new_submission = QuestSubmission(
+            quest=quest,
+            user=user,
+            ordinal=ordinal,
+            semester_id=SiteConfig.get().active_semester.pk,
+        )
+        new_submission.save()
+        return new_submission
 
     def calculate_xp(self, user):
         """
@@ -784,7 +895,6 @@ class QuestSubmission(models.Model):
                                    help_text="flagged by a teacher for follow up",
                                    on_delete=models.SET_NULL)
     draft_text = models.TextField(null=True, blank=True)
-
     xp_requested = models.PositiveIntegerField(
         default=0,
         help_text='The number of XP you are requesting for this submission.'
@@ -855,12 +965,33 @@ class QuestSubmission(models.Model):
     def get_comments(self):
         return Comment.objects.all_with_target_object(self)
 
+    def _fix_ordinal(self):
+        # NOTE: There is a rare bug that we are unable to reproduce as of the moment where a QuestSubmission has the same ordinal.
+        # This is just a temporary hack where it will automatically fix the incorrect ordinal
+        # See issue for context: https://github.com/bytedeck/bytedeck/issues/1260
+        broken_ordinal_start = self.ordinal - 1
+        submissions = QuestSubmission.objects.filter(quest=self.quest, user=self.user, ordinal__gte=self.ordinal - 1).order_by('time_completed')
+
+        for submission in submissions:
+            submission.ordinal = broken_ordinal_start
+            submission.save()
+
+            broken_ordinal_start += 1
+
     def get_previous(self):
         """ If this is a repeatable quest and has been completed already, return that previous submission """
-        if self.ordinal > 1:
-            return QuestSubmission.objects.get(quest=self.quest, user=self.user, ordinal=self.ordinal - 1)
-        else:
+
+        if self.ordinal is None or self.ordinal <= 1:
             return None
+
+        try:
+            return QuestSubmission.objects.get(quest=self.quest, user=self.user, ordinal=self.ordinal - 1)
+        except QuestSubmission.MultipleObjectsReturned:
+            self._fix_ordinal()
+
+        # Attempt to fetch to previoius after the ordinals are fixed
+        self.refresh_from_db()
+        return self.get_previous()
 
     def get_minutes_to_complete(self):
         """Returns the difference in minutes between first_time_complete and the (creation) timestamp.

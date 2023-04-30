@@ -35,17 +35,5 @@ $(document).ready(function() {
      $('.note-unread').find('.accordian-trigger').click(function() {
        window.location.href = $(this).attr("href");
      });
-    
-    // parse markdown for all elements with .marked class
-    // marked.setOptions({
-    //    sanitize: false,
-    // });
-    // $('.markdown').each(function() {
-    //     console.log( $(this).html() )
-    //     console.log( marked( $(this).html() ))
-    //     $(this).html( marked( $(this).html() ) );
-    // });
 
-    // console.log("anyone home?")
-    
 });

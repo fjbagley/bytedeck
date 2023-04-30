@@ -5,7 +5,7 @@ version: '2.2'
 # FOR DOCKER-COMPOSE SETTINGS SPECIFIC TO AWS PRODUCTION
 #
 # Run with:
-# `docker-compose -f docker-compose.aws.yml -f docker-compose.prod.aws.yml up -d`
+# `docker-compose -f docker-compose.yml -f docker-compose.prod.aws.yml up -d`
 #
 # https://docs.docker.com/compose/extends/
 ################################################################################
@@ -14,7 +14,7 @@ services:
   web:
     command: bash -c "cd /app/src/ &&
                       python manage.py migrate_schemas --shared &&
-                      python manage.py migrate_schemas --executor=parallel &&
+                      python manage.py migrate_schemas --executor=multiprocessing &&
                       python manage.py collectstatic --noinput &&
                       uwsgi --ini uwsgi.aws.ini"
     volumes:

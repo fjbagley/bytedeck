@@ -15,6 +15,7 @@ from siteconfig.models import SiteConfig
 from notifications.signals import notify
 
 from prerequisites.models import Prereq, IsAPrereqMixin, HasPrereqsMixin
+from tags.models import TagsModelMixin
 
 
 # Create your models here.
@@ -79,7 +80,7 @@ class BadgeRarity(models.Model):
             self.name,
             self.color,
         )
-        aria_span = "<span class='sr-only'>{}</span>".format(self.name)
+        aria_span = f"<span class='sr-only'>{self.name}</span>"
         return icon + aria_span
 
 
@@ -141,14 +142,14 @@ class BadgeManager(models.Manager):
         return self.filter(pk__in=pk_manual_list).order_by('name')
 
 
-class Badge(IsAPrereqMixin, HasPrereqsMixin, models.Model):
+class Badge(IsAPrereqMixin, HasPrereqsMixin, TagsModelMixin, models.Model):
     name = models.CharField(max_length=50, unique=True)
     xp = models.PositiveIntegerField(default=0)
     datetime_created = models.DateTimeField(auto_now_add=True, auto_now=False)
     datetime_last_edit = models.DateTimeField(auto_now_add=False, auto_now=True)
     short_description = models.TextField(blank=True, null=True)
     series = models.ForeignKey(BadgeSeries, blank=True, null=True, on_delete=models.SET_NULL)
-    badge_type = models.ForeignKey(BadgeType, on_delete=models.CASCADE)
+    badge_type = models.ForeignKey(BadgeType, on_delete=models.PROTECT)
     icon = models.ImageField(upload_to='icons/badges/', blank=True, null=True)  # needs Pillow for ImageField
     sort_order = models.PositiveIntegerField(blank=True, null=True)
     active = models.BooleanField(default=True)
@@ -158,6 +159,11 @@ class Badge(IsAPrereqMixin, HasPrereqsMixin, models.Model):
         help_text="Only edit this if you want to link to a badge in another system so that "
                   "when importing from that other system, it will update this badge too. "
                   "Otherwise do not edit this or it will break existing links!"
+    )
+
+    map_transition = models.BooleanField(
+        default=False,
+        help_text='Break maps at this badge.  This badge will link to a new map.'
     )
     # hours_between_repeats = models.PositiveIntegerField(default = 0)
     # date_available = models.DateField(default=timezone.now())

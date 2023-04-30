@@ -1,7 +1,6 @@
 from datetime import timedelta
 
 from django.contrib import messages
-from django.contrib.admin.views.decorators import staff_member_required
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth.models import User
 from django.contrib.messages.views import SuccessMessageMixin
@@ -12,6 +11,8 @@ from django.urls.base import reverse
 from django.utils import timezone
 from django.utils.decorators import method_decorator
 from django.views.generic.edit import CreateView, DeleteView, UpdateView
+
+from hackerspace_online.decorators import staff_member_required
 
 from comments.forms import CommentForm
 from comments.models import Comment
@@ -188,7 +189,7 @@ class Create(NonPublicOnlyViewMixin, SuccessMessageMixin, CreateView):
         if not new_announcement.draft:
             send_notifications.apply_async(args=[self.request.user.id, new_announcement.id], queue='default')
 
-        return super(Create, self).form_valid(form)
+        return super().form_valid(form)
 
     def get_success_message(self, cleaned_data):
         if self.object.draft:
@@ -198,7 +199,7 @@ class Create(NonPublicOnlyViewMixin, SuccessMessageMixin, CreateView):
 
     def get_context_data(self, **kwargs):
         # Call the base implementation first to get a context
-        context = super(Create, self).get_context_data(**kwargs)
+        context = super().get_context_data(**kwargs)
         # Add in a QuerySet of all the books
         context['heading'] = "Create New Announcement"
         context['submit_btn_value'] = "Save"
@@ -206,7 +207,7 @@ class Create(NonPublicOnlyViewMixin, SuccessMessageMixin, CreateView):
 
     @method_decorator(staff_member_required)
     def dispatch(self, *args, **kwargs):
-        return super(Create, self).dispatch(*args, **kwargs)
+        return super().dispatch(*args, **kwargs)
 
 
 class Update(NonPublicOnlyViewMixin, SuccessMessageMixin, UpdateView):
@@ -216,7 +217,7 @@ class Update(NonPublicOnlyViewMixin, SuccessMessageMixin, UpdateView):
 
     def get_context_data(self, **kwargs):
         # Call the base implementation first to get a context
-        context = super(Update, self).get_context_data(**kwargs)
+        context = super().get_context_data(**kwargs)
         # Add in a QuerySet of all the books
         context['heading'] = "Edit Announcement"
         context['submit_btn_value'] = "Update"
@@ -232,7 +233,7 @@ class Update(NonPublicOnlyViewMixin, SuccessMessageMixin, UpdateView):
 
     @method_decorator(staff_member_required)
     def dispatch(self, *args, **kwargs):
-        return super(Update, self).dispatch(*args, **kwargs)
+        return super().dispatch(*args, **kwargs)
 
 
 class Delete(NonPublicOnlyViewMixin, DeleteView):
@@ -242,4 +243,4 @@ class Delete(NonPublicOnlyViewMixin, DeleteView):
 
     @method_decorator(staff_member_required)
     def dispatch(self, *args, **kwargs):
-        return super(Delete, self).dispatch(*args, **kwargs)
+        return super().dispatch(*args, **kwargs)

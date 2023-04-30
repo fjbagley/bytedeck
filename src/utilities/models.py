@@ -70,7 +70,7 @@ class MenuItem(models.Model):
                                help_text=mark_safe("The Font Awesome icon to display beside the text. E.g. 'star-o'. "
                                                    "Options from <a target='_blank'"
                                                    "href='http://fontawesome.com/v4.7.0/icons/'>Font Awesome</a>."))
-    url = URLOrRelativeURLField(help_text="Relative URLs will work too.  E.g. '/courses/ranks/'")
+    url = URLOrRelativeURLField(help_text="Relative URLs will work too.  E.g. '/courses/ranks/'", verbose_name="URL")
     open_link_in_new_tab = models.BooleanField()
     sort_order = models.IntegerField(default=0, help_text="Lowest will be at the top.")
     visible = models.BooleanField(default=True)
@@ -80,6 +80,6 @@ class MenuItem(models.Model):
 
     def __str__(self):
         target = 'target="_blank"' if self.open_link_in_new_tab else ''
-        return '<a href="{0}" {1}>' \
-               '<i class="fa fa-fw fa-{2}"></i>&nbsp;&nbsp;{3}' \
+        return '<a href="{}" {}>' \
+               '<i class="fa fa-fw fa-{}"></i>&nbsp;&nbsp;{}' \
                '</a>'.format(self.url, target, self.fa_icon, self.label)

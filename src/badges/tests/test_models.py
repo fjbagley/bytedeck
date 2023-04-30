@@ -1,13 +1,13 @@
 from django.contrib.auth import get_user_model
 from django.utils import timezone
 
+from django_tenants.test.cases import TenantTestCase
+from django_tenants.test.client import TenantClient
 from model_bakery import baker
 from model_bakery.recipe import Recipe
-from tenant_schemas.test.cases import TenantTestCase
-from tenant_schemas.test.client import TenantClient
 
+from badges.models import Badge, BadgeAssertion, BadgeRarity, BadgeSeries, BadgeType
 from siteconfig.models import SiteConfig
-from badges.models import Badge, BadgeAssertion, BadgeType, BadgeSeries, BadgeRarity
 
 User = get_user_model()
 
@@ -21,15 +21,15 @@ class BadgeRarityTestModel(TenantTestCase):
         self.assertEqual(str(self.common), self.common.name)
 
     def test_get_rarity(self):
-        self.common = baker.make(BadgeRarity, percentile=100.0)
-        self.rare = baker.make(BadgeRarity, percentile=50.0)
-        self.ultrarare = baker.make(BadgeRarity, percentile=1.0)
+        """rarity values used are chosen to avoid conflicts with defaults"""
+        self.common = baker.make(BadgeRarity, percentile=90.0)
+        self.rare = baker.make(BadgeRarity, percentile=80.0)
+        self.ultrarare = baker.make(BadgeRarity, percentile=70.0)
 
-        self.assertEqual(BadgeRarity.objects.get_rarity(0.5), self.ultrarare)
-        self.assertEqual(BadgeRarity.objects.get_rarity(49.0), self.rare)
-        self.assertEqual(BadgeRarity.objects.get_rarity(50.0), self.rare)
-        self.assertEqual(BadgeRarity.objects.get_rarity(100.0), self.common)
-        self.assertEqual(BadgeRarity.objects.get_rarity(110.0), self.common)
+        self.assertEqual(BadgeRarity.objects.get_rarity(69.0), self.ultrarare)
+        self.assertEqual(BadgeRarity.objects.get_rarity(79.0), self.rare)
+        self.assertEqual(BadgeRarity.objects.get_rarity(80.0), self.rare)
+        self.assertEqual(BadgeRarity.objects.get_rarity(90.0), self.common)
 
 
 class BadgeTypeTestModel(TenantTestCase):
@@ -40,10 +40,16 @@ class BadgeTypeTestModel(TenantTestCase):
         self.assertIsInstance(self.badge_type, BadgeType)
         self.assertEqual(str(self.badge_type), self.badge_type.name)
 
-    def test_default_badges_created(self):
-        """ A data migration should make default objects for this model """
-        self.assertTrue(BadgeType.objects.filter(name="Talent").exists())
-        self.assertTrue(BadgeType.objects.filter(name="Award").exists())
+    def test_model_protection(self):
+        """ Badge types shouldn't be deleted if they have any assigned badges """
+
+        # make sure initial variables are in place
+        badge = baker.make(Badge, xp=5, badge_type=self.badge_type)
+        self.assertTrue(Badge.objects.count(), 1)
+        self.assertEqual(badge.badge_type, self.badge_type)
+
+        # see if models.PROTECT is in place
+        self.assertRaises(Exception, self.badge_type.delete)
 
 
 class BadgeSeriesTestModel(TenantTestCase):
@@ -70,13 +76,6 @@ class BadgeTestModel(TenantTestCase):
 
     def test_badge_url(self):
         self.assertEqual(self.client.get(self.badge.get_absolute_url(), follow=True).status_code, 200)
-
-    def test_default_badge_data(self):
-        """ Data migration should create 4 badges """
-        self.assertTrue(Badge.objects.filter(name="Penny").exists())
-        self.assertTrue(Badge.objects.filter(name="Nickel").exists())
-        self.assertTrue(Badge.objects.filter(name="Dime").exists())
-        self.assertTrue(Badge.objects.filter(name="ByteDeck Proficiency").exists())
 
 
 class BadgeAssertionTestManager(TenantTestCase):
@@ -183,7 +182,7 @@ class BadgeAssertionTestModel(TenantTestCase):
             self.student,
             baker.make(Badge),
         )
-        self.assertIsInstance(new_assertion, BadgeAssertion) 
+        self.assertIsInstance(new_assertion, BadgeAssertion)
 
     def test_badge_assertion_manager_xp_to_date(self):
         xp = BadgeAssertion.objects.calculate_xp_to_date(self.student, timezone.now())

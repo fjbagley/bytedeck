@@ -4,14 +4,15 @@ from django.contrib.auth import get_user_model
 from django.contrib.contenttypes.models import ContentType
 from django.test import SimpleTestCase
 
+from django_tenants.test.cases import TenantTestCase
 from model_bakery import baker
-from tenant_schemas.test.cases import TenantTestCase
-# from tenant_schemas.test.client import TenantClient
-
-from quest_manager.models import Quest
 
 # from siteconfig.models import SiteConfig
-from djcytoscape.models import CytoElement, TempCampaignNode, TempCampaign, CytoScape, clean_JSON
+from djcytoscape.models import CytoElement, CytoScape, TempCampaign, TempCampaignNode, clean_JSON
+from quest_manager.models import Quest
+
+# from django_tenants.test.client import TenantClient
+
 
 User = get_user_model()
 
@@ -31,7 +32,7 @@ class JSONTestCaseMixin:
             return json.loads(str)
         except TypeError:
             self.fail(f"Can't deserialize this JSON string: \n {str}")
-    
+
     def assertValidJSONDict(self, json_dict):
         """Tests that a python dictionary can be serialized into JSON via json.dumps
         """
@@ -60,46 +61,46 @@ class CleanJSONTest(JSONTestCaseMixin, SimpleTestCase):
         self.assertValidJSON(clean_JSON('\'key\': true'))
 
     def test_clean_old_defaults_INIT_OPTIONS(self):
-        json_str = """minZoom: 0.5, 
-            maxZoom: 1.5, 
+        json_str = """minZoom: 0.5,
+            maxZoom: 1.5,
             wheelSensitivity: 0.1,
             zoomingEnabled: false,
             userZoomingEnabled: false,
             autoungrabify: true,
             autounselectify: true,
             """
-        self.assertValidJSON(clean_JSON(json_str))    
+        self.assertValidJSON(clean_JSON(json_str))
 
     def test_clean_old_defaults_NODE_STYLES(self):
-        json_str = """label: 'data(label)', 
-            'text-valign':   'center', 'text-halign': 'right', 
-            'text-margin-x': '-155', 
+        json_str = """label: 'data(label)',
+            'text-valign':   'center', 'text-halign': 'right',
+            'text-margin-x': '-155',
             'text-wrap': 'wrap',
             'text-max-width': 150,
-            'width':         180, 
-            'background-fit':'contain', 
-            'shape':         'roundrectangle', 
-            'background-opacity': 0, 
-            'background-position-x': 0, 
+            'width':         180,
+            'background-fit':'contain',
+            'shape':         'roundrectangle',
+            'background-opacity': 0,
+            'background-position-x': 0,
             'height': 24,
-            'border-width':  1, 
-            'padding-right': 5, 'padding-left':5, 'padding-top':5, 'padding-bottom':5, 
+            'border-width':  1,
+            'padding-right': 5, 'padding-left':5, 'padding-top':5, 'padding-bottom':5,
             'text-events':   'yes',
             'font-size': 12,
             """
-        self.assertValidJSON(clean_JSON(json_str))   
+        self.assertValidJSON(clean_JSON(json_str))
 
     def test_clean_old_defaults_EDGE_STYLES(self):
-        json_str = """'width': 1, 
-            'curve-style':   'bezier', 
-            'line-color':    'black', 
-            'line-style':    'solid', 
-            'target-arrow-shape': 'triangle-backcurve', 
-            'target-arrow-color':'black', 
-            'text-rotation': 'autorotate', 
+        json_str = """'width': 1,
+            'curve-style':   'bezier',
+            'line-color':    'black',
+            'line-style':    'solid',
+            'target-arrow-shape': 'triangle-backcurve',
+            'target-arrow-color':'black',
+            'text-rotation': 'autorotate',
             'label':         'data(label)',
             """
-        self.assertValidJSON(clean_JSON(json_str))  
+        self.assertValidJSON(clean_JSON(json_str))
 
 
 class CytoElementModelTest(JSONTestCaseMixin, TenantTestCase):
@@ -122,7 +123,7 @@ class CytoElementModelTest(JSONTestCaseMixin, TenantTestCase):
             self.assertValidJSONDict(json_dict)
             self.assertIn('data', json_dict)
             if element.is_node():  # Quests, Campaigns and Badges should have a class
-                self.assertIn('classes', json_dict)  
+                self.assertIn('classes', json_dict)
 
 
 class TempCampaignNodeTest(TenantTestCase):
@@ -156,6 +157,21 @@ class CytoScapeModelTest(JSONTestCaseMixin, TenantTestCase):
         CytoScape.generate_map(quest, "test")
         self.assertEqual(CytoScape.objects.count(), 2)
 
+    def test_save__sets_first_scape_as_primary(self):
+        newmap = baker.make('djcytoscape.CytoScape')
+        self.assertTrue(self.map.is_the_primary_scape)
+        self.assertFalse(newmap.is_the_primary_scape)
+
+    def test_save__changes_primary_scape(self):
+        newmap = baker.make('djcytoscape.CytoScape')
+        self.assertTrue(self.map.is_the_primary_scape)
+        self.assertFalse(newmap.is_the_primary_scape)
+        newmap.is_the_primary_scape = True
+        newmap.save()
+        self.assertTrue(newmap.is_the_primary_scape)
+        self.map.refresh_from_db()
+        self.assertFalse(self.map.is_the_primary_scape)
+
     def test_elements_dict(self):
         eles_dict = self.map.elements_dict()
         self.assertIsInstance(eles_dict, dict)
@@ -179,13 +195,41 @@ class CytoScapeModelTest(JSONTestCaseMixin, TenantTestCase):
         """Can regenerate without error on a known good map object"""
         self.map.regenerate()
 
+    def test_maps_dont_include_drafts(self):
+        """Draft (unpublished) quests should not appear in maps (quest.visible_to_students = False)"""
+
+        # default map json includes quest 6: {'data': {'id': 32, 'label': 'Send your teacher a Message (0)', 'href': '/quests/6/', 'Quest': 6}
+        self.assertIn("/quests/6/", self.map.elements_json)
+
+        # Make quest 6 a draft and regenerate the map
+        quest_6 = Quest.objects.get(id=6)
+        quest_6.visible_to_students = False  # draft/unpublished
+        quest_6.save()
+        self.map.regenerate()
+
+        # should no longer be in the map
+        self.assertNotIn("/quests/6/", self.map.elements_json)
+
+    def test_maps_dont_include_archived_quests(self):
+        # default map json includes quest 6: {'data': {'id': 32, 'label': 'Send your teacher a Message (0)', 'href': '/quests/6/', 'Quest': 6}
+        self.assertIn("/quests/6/", self.map.elements_json)
+
+        # Archive quest #6 and regenerate the map
+        quest_6 = Quest.objects.get(id=6)
+        quest_6.archived = True
+        quest_6.save()
+        self.map.regenerate()
+
+        # should no longer be in the map
+        self.assertNotIn("/quests/6/", self.map.elements_json)
+
     def test_regenerate_deleted_initial_object_throws_exception_and_deletes_map(self):
         """when regenerating a map that has had its initial object deleted, remove it and raise error."""
         bad_map = CytoScape.objects.create(
-            name="bad map", 
-            initial_content_type=ContentType.objects.get(app_label='quest_manager', model='quest'), 
+            name="bad map",
+            initial_content_type=ContentType.objects.get(app_label='quest_manager', model='quest'),
             initial_object_id=99999,  # a non-existant object
-        ) 
+        )
 
         with self.assertRaises(bad_map.InitialObjectDoesNotExist):
             bad_map.regenerate()

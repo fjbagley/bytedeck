@@ -5,8 +5,8 @@ from django.forms import model_to_dict
 from django.utils import timezone
 
 from django_celery_beat.models import ClockedSchedule, CrontabSchedule, IntervalSchedule, PeriodicTask, SolarSchedule
-from tenant_schemas.test.cases import TenantTestCase
-from tenant_schemas.utils import get_public_schema_name, schema_context
+from django_tenants.test.cases import TenantTestCase
+from django_tenants.utils import get_public_schema_name, schema_context
 
 PUBLIC_SCHEMA = get_public_schema_name()
 
@@ -69,11 +69,11 @@ class PeriodicTaskSignalsTest(TenantTestCase):
     def test_save_SolarSchedule_signal(self):
         """ Saving a SolarSchedule model should also save it in the public schema """
 
-        params = dict(
-            event='sunrise',
-            latitude=37.281248,
-            longitude=-122.000218
-        )
+        params = {
+            'event': 'sunrise',
+            'latitude': 37.281248,
+            'longitude': -122.000218
+        }
         solar_schedule = SolarSchedule(**params)
         solar_schedule.save()
 
