@@ -75,11 +75,11 @@
         <form method="POST" enctype="multipart/form-data" action="{% url 'quests:approve' submission.id%}">
       {% else %}
         <form method="POST" enctype="multipart/form-data" action="{% url 'quests:complete' submission.id%}">
-{% endif %}
+      {% endif %}
 
           {% csrf_token %}
           {{ submission_form | crispy }}
-                    <div class='form-group form-group-summernote'>
+          <div class='form-group form-group-summernote'>
           {% if request.user.is_staff %}
             {% with submission as s %}
             <div>
@@ -104,7 +104,7 @@
           {% endif %}
           </div>
         </form>
-          </div>
+    </div>
   </div>
 
 {% endblock %}
@@ -161,7 +161,6 @@
             $draftCheck = $('#draft-check')
 
             if ($draftText.is(':visible')) {
-
                 $draftText.hide(0) // no delay
                 $draftSpin.show()
 
@@ -209,35 +208,155 @@
     
     {% include 'quest_manager/snippets/flag_submissions_scripts.html' %}
     
-    {% if not request.user.is_staff %}
-    <script defer>
-      /*Detects when a user pastes into any textarea with class 'note-editable' and sets the pastedetected field
-      to true for form validation.*/
-  
-      // Delay the execution by 1 seconds (1000 milliseconds) due to AJAX loading
-      setTimeout(function() {
-        const commentTextareas = document.getElementsByClassName('note-editable');
+  {% if not request.user.is_staff %}
+    
+  <script src="https://www.youtube.com/iframe_api"></script>
+  <script>
+    //This script is for tracking video progress for a submission
+    let player;
+    let videoProgress = JSON.parse(document.getElementById('video-progress').textContent) || {};
+    let lastUpdateTime = 0;
+    //How often to check for progress in seconds
+    const INTERVAL = 15;
+    const iframeParams = parseIframeParams();
 
-        // Iterate over the HTMLCollection
-        for (let i = 0; i < commentTextareas.length; i++) {
-            const commentTextarea = commentTextareas[i];  // Get the current textarea
+    // If the video is not yet watched, set the start/end times from the iframe
+    function parseIframeParams() {
+      const iframe = submission.quest.instructions.match(/<iframe[^>]+src=["'](.*?)["']/i);
+      console.log(iframe +'found');
 
-            commentTextarea?.addEventListener('paste', function(event) {
-              const pastedDetectedField = document.getElementById('id_paste_detected');
+      return iframe ? {
+        start: parseInt((iframe[1].match(/start=(\d+)/) || [])[1]) || 0,
+        end: parseInt((iframe[1].match(/end=(\d+)/) || [])[1]) || null
+      } : { start: 0, end: null };
+    };
 
-              if (pastedDetectedField) {
-                pastedDetectedField.value = "true";
-              } 
-              else {
-                  console.error("Hidden field 'id_pastedetected' NOT FOUND!");
-              }
-            });
+    // Initialize the YouTube player script to allow javascript to listen and control the video
+    function onYouTubeIframeAPIReady() {
+      const iframe = $(submission.quest.instructions).filter("iframe")[0];
+      if (!iframe) return;
+      const videoId = iframe.src.split('embed/')[1].split('?')[0];
+      player = new YT.Player('youtube-player', {
+        videoId: videoId,
+        events: { 
+          'onReady': onPlayerReady, 
+          'onStateChange': onPlayerStateChange 
         }
-      }, 1000); // 1000 milliseconds = 1 second
-  
-    </script>
-    {% endif %}
+      });
+    }
 
+   
+    // When the player is ready, set the start and end points for tracking progress
+    function onPlayerReady(event) {
+      player = event.target;
+      const effectiveStart = iframeParams.start;
+      const effectiveEnd = iframeParams.end || player.getDuration();
 
+      if (!videoProgress.start && !videoProgress.end) {
+          videoProgress = {
+              start: effectiveStart,
+              end: iframeParams.end, // Store null if no end specified
+              watched: videoProgress.watched || []
+          };
+          saveVideoProgress();
+      }
+      if (effectiveStart > 0) player.seekTo(effectiveStart);
+      setInterval(trackProgress, INTERVAL * 1000);
+    }
 
+    //start tracking progress when the video is playing
+    function onPlayerStateChange(event) {
+      if (event.data === YT.PlayerState.PLAYING) 
+        trackProgress();
+    }
+    //
+    function trackProgress() {
+      if (!player || player.getPlayerState() !== YT.PlayerState.PLAYING) return;
+
+      const currentTime = player.getCurrentTime();
+      const effectiveStart = videoProgress.start;
+      const effectiveEnd = videoProgress.end || videoDuration;
+
+      if (currentTime < effectiveStart || currentTime > effectiveEnd) return;
+
+      if (currentTime - lastUpdateTime >= INTERVAL || currentTime < lastUpdateTime) {
+          const start = Math.max(effectiveStart, Math.floor(currentTime - INTERVAL));
+          const end = Math.min(effectiveEnd, Math.ceil(currentTime));
+          addWatchedSegment(start, end);
+          saveVideoProgress();
+          lastUpdateTime = currentTime;
+      } 
+    }
+    //add a segment of the video that has been watched
+    function addWatchedSegment(start, end) {
+      if (!videoProgress.watched) videoProgress.watched = [];
+      let watched = videoProgress.watched;
+      let merged = false;
+      for (let i = 0; i < watched.length; i++) {
+        const seg = watched[i];
+        if (seg[0] <= end + 1 && seg[1] >= start - 1) {
+          seg[0] = Math.min(seg[0], start);
+          seg[1] = Math.max(seg[1], end);
+          merged = true;
+          break;
+        }
+      }
+      if (!merged) {
+        watched.push([start, end]);
+      }
+      watched.sort((a, b) => a[0] - b[0]);
+      for (let i = watched.length - 1; i > 0; i--) {
+        if (watched[i-1][1] >= watched[i][0] - 1) {
+          watched[i-1][1] = Math.max(watched[i-1][1], watched[i][1]);
+          watched.splice(i, 1);
+        }
+      }
+    }
+
+    function saveVideoProgress() {
+        $.ajax({
+            url: "{% url 'quest_manager:ajax_save_video_progress' %}",
+            type: "POST",
+            data: {
+                csrfmiddlewaretoken: "{{ csrf_token }}",
+                submission_id: "{{ submission.id }}",
+                video_progress: JSON.stringify(videoProgress)
+            },
+            success: function(response) {
+                console.log("Video progress saved:", response);
+            },
+            error: function(xhr, errmsg, err) {
+                console.error("Error saving video progress:", errmsg);
+            }
+        });
+    }
+  </script>
+
+  <script defer>
+    /*Detects when a user pastes into any textarea with class 'note-editable' and sets the pastedetected field
+    to true for form validation.*/
+
+    // Delay the execution by 1 seconds (1000 milliseconds) due to AJAX loading
+    setTimeout(function() {
+      const commentTextareas = document.getElementsByClassName('note-editable');
+
+      // Iterate over the HTMLCollection
+      for (let i = 0; i < commentTextareas.length; i++) {
+          const commentTextarea = commentTextareas[i];  // Get the current textarea
+
+          commentTextarea?.addEventListener('paste', function(event) {
+            const pastedDetectedField = document.getElementById('id_paste_detected');
+
+            if (pastedDetectedField) {
+              pastedDetectedField.value = "true";
+            } 
+            else {
+                console.error("Hidden field 'id_pastedetected' NOT FOUND!");
+            }
+          });
+      }
+    }, 1000); // 1000 milliseconds = 1 second
+
+  </script>
+    {% endif %}  
 {% endblock %}

@@ -72,6 +72,7 @@ urlpatterns = [
     # Quest/Submission Summary Metrics
     path('<int:pk>/summary/', views.QuestSubmissionSummary.as_view(), name='summary'),
     path('<int:pk>/summary/ajax', views.ajax_summary_histogram, name='ajax_summary_histogram'),
+    path('ajax/save_video_progress/', views.ajax_save_video_progress, name='ajax_save_video_progress'),
 
     # Submissions
     re_path(r'^submission/(?P<submission_id>[0-9]+)/skip/$', views.skip, name='skip'),

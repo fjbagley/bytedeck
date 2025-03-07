@@ -887,6 +887,13 @@ class QuestSubmission(models.Model):
         help_text='The number of XP you are requesting for this submission.'
     )
 
+    video_progress = models.JSONField(
+        null=True, 
+        blank=True, 
+        default=dict,
+        help_text="Dictionary with 'start'(int), 'end'(int), and 'watched'(list of [start, end] ranges) for video ptrogress)"
+    )
+
     class Meta:
         ordering = ["time_approved", "time_completed"]
 

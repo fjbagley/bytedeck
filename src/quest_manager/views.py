@@ -1436,6 +1436,24 @@ def ajax_save_draft(request):
 
     else:
         raise Http404
+    
+# This view is used to save the progress of a video in a quest submission
+# The progress is saved in the submission object
+@xml_http_request_required
+@non_public_only_view
+@login_required
+def ajax_save_video_progress(request):
+    if request.method == "POST":
+        submission_id = request.POST.get("submission_id")
+        video_progress = request.POST.get("video_progress")
+
+        sub = get_object_or_404(QuestSubmission, pk=submission_id, user=request.user)
+        sub.video_progress = json.loads(video_progress)
+        sub.save()
+
+        return JsonResponse({"result": "Video progress saved"})
+    else:
+        raise Http404
 
 
 @non_public_only_view
