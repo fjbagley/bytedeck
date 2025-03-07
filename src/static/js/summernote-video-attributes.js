@@ -110,6 +110,7 @@
               '</select>'+
             '</div>'+
           '</div>'+
+          //Start and end time inputs
           '<div class="form-group row">' +
             '<label for="note-video-attributes-start" class="control-label col-xs-3">' + lang.videoAttributes.start + '</label>' +
             '<div class="input-group col-xs-9">' +
