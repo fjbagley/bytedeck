@@ -83,7 +83,7 @@
           '<div class="form-group">'+
             '<label for="note-video-attributes-href" class="control-label col-xs-3">'+lang.videoAttributes.href+'</label>'+
             '<div class="input-group col-xs-9">'+
-              '<input type="text" id="note-video-attributes-href" class="note-video-attributes-href form-control">'+
+              '<input type="text" id="note-video-attributes-href" class="note-video-attributes-href form-control" required>'+
             '</div>'+
           '</div>'+
           '<div class="form-group">'+
@@ -217,7 +217,7 @@
           $videoEndSec.val(0);
         }
         endSeconds = (endHrs * 3600) + (endMin * 60) + endSec;
-        if ($videoHref.val() == "") {
+        if (!self.$dialog.find('input')[0].checkValidity()) {
           $okBtn.prop('disabled', true);
           $okBtn.attr('title', 'URL is required');
         } else if (endSeconds > 0 && startSeconds >= endSeconds) {
